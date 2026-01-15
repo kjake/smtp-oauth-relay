@@ -143,6 +143,10 @@ def split_raw_message(raw_message: bytes) -> tuple[bytes, bytes, bytes]:
         header_end = raw_message.find(b"\n\n")
         separator = b"\n\n"
     if header_end == -1:
+        if raw_message.startswith(b"\r\n"):
+            return b"", b"\r\n", raw_message[len(b"\r\n"):]
+        if raw_message.startswith(b"\n"):
+            return b"", b"\n", raw_message[len(b"\n"):]
         return raw_message, b"", b""
     header_bytes = raw_message[:header_end]
     body_bytes = raw_message[header_end + len(separator):]
