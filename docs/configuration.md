@@ -43,6 +43,16 @@ LOG_LEVEL=INFO
 SERVER_GREETING="My Company SMTP Relay"
 ```
 
+#### HTTP_TIMEOUT_SECONDS
+- **Type**: Float
+- **Default**: `30`
+- **Description**: Timeout in seconds for outbound HTTP calls to the Microsoft identity platform and Microsoft Graph API. Increase this value if your environment has high latency.
+
+**Example**:
+```bash
+HTTP_TIMEOUT_SECONDS=45
+```
+
 ### TLS Configuration
 
 #### TLS_SOURCE
@@ -163,8 +173,8 @@ AZURE_KEY_VAULT_URL=https://my-keyvault.vault.azure.net/
 
 **Requirements**:
 - The application must have a managed identity
-- The identity must have `Get Secret` and `Get Certificate` permissions on the Key Vault
-- Certificate must be imported in PKCS#12 format
+- The identity must have `Get Secret` permissions on the Key Vault (for example, the **Key Vault Secrets User** role)
+- Certificate must be imported so its secret contains a PKCS#12 payload
 
 #### AZURE_KEY_VAULT_CERT_NAME
 - **Type**: String
@@ -226,7 +236,7 @@ EXAMPLE_COM_FROM_FAILBACK=noreply@example.com
 - **Type**: Boolean
 - **Default**: `false`
 - **Valid Values**: `true`, `false` (case-insensitive)
-- **Description**: Enables DKIM signing when `true`. If unset, DKIM signing is enabled automatically when a selector and key are provided. When enabled, the relay validates DKIM settings at startup and logs errors for missing or malformed keys.
+- **Description**: Enables DKIM signing when `true`. If unset, DKIM signing is enabled automatically when a selector and key are provided. If you rely exclusively on Azure Table entries for DKIM configuration, set `DKIM_ENABLED=true` to turn on signing. When enabled, the relay validates DKIM settings at startup and logs errors for missing or malformed keys.
 
 **Example**:
 ```bash

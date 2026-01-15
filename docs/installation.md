@@ -29,7 +29,7 @@ This will:
 
 **After deployment:**
 1. Note the FQDN of the container instance
-2. Add RBAC permissions for the managed identity to access Key Vault (`Key Vault Certificate User`) and/or Table Storage (`Storage Table Data Reader`) if used
+2. Add RBAC permissions for the managed identity to access Key Vault (`Key Vault Secrets User`) and/or Table Storage (`Storage Table Data Reader`) if used
 3. [Configure your Azure/Entra ID application](azure-setup.md)
 4. [Configure your SMTP clients](client-setup.md)
 
