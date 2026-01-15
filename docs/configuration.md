@@ -208,6 +208,18 @@ See [Azure Tables Integration](azure-tables.md) for detailed setup.
 AZURE_TABLES_PARTITION_KEY=smtp-users
 ```
 
+### Sender Failback Configuration
+
+#### `<DOMAIN>_FROM_FAILBACK`
+- **Type**: String (email address)
+- **Default**: None (optional)
+- **Description**: Provides a failback sender address when the incoming message is malformed or missing a valid sender. The variable name is derived from the sender domain by replacing `.` with `_` and uppercasing. For example, for `example.com`, set `EXAMPLE_COM_FROM_FAILBACK`.
+
+**Example**:
+```bash
+EXAMPLE_COM_FROM_FAILBACK=noreply@example.com
+```
+
 ## Configuration Examples
 
 ### Production Configuration (File-based TLS)
