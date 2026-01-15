@@ -100,13 +100,17 @@ DKIM_PRIVATE_KEY_PATH = load_env(
     default=None,
     sanitize=lambda x: x.strip() if x else x
 )
-DKIM_ENABLED = load_env(
-    name='DKIM_ENABLED',
-    default='false',
-    valid_values=['true', 'false'],
-    sanitize=lambda x: x.lower(),
-    convert=lambda x: x == 'true'
-)
+DKIM_ENABLED_RAW = os.getenv('DKIM_ENABLED')
+if DKIM_ENABLED_RAW is None:
+    DKIM_ENABLED = bool(DKIM_SELECTOR or DKIM_PRIVATE_KEY or DKIM_PRIVATE_KEY_PATH)
+else:
+    DKIM_ENABLED = load_env(
+        name='DKIM_ENABLED',
+        default='false',
+        valid_values=['true', 'false'],
+        sanitize=lambda x: x.lower(),
+        convert=lambda x: x == 'true'
+    )
 DKIM_CANONICALIZATION = load_env(
     name='DKIM_CANONICALIZATION',
     default='relaxed/relaxed',

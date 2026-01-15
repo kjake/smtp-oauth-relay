@@ -226,7 +226,7 @@ EXAMPLE_COM_FROM_FAILBACK=noreply@example.com
 - **Type**: Boolean
 - **Default**: `false`
 - **Valid Values**: `true`, `false` (case-insensitive)
-- **Description**: Enables DKIM signing when `true`. When enabled, the relay validates DKIM settings at startup and logs errors for missing or malformed keys.
+- **Description**: Enables DKIM signing when `true`. If unset, DKIM signing is enabled automatically when a selector and key are provided. When enabled, the relay validates DKIM settings at startup and logs errors for missing or malformed keys.
 
 **Example**:
 ```bash
