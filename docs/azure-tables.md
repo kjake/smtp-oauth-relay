@@ -152,6 +152,8 @@ AZURE_TABLES_URL=https://smtprelay1234.table.core.windows.net/users
 AZURE_TABLES_PARTITION_KEY=user
 ```
 
+DKIM signing works with Azure Tables lookup as long as you configure the DKIM-related environment variables (the relay signs after resolving the sender address from the table). See the [configuration reference](configuration.md) for the full list.
+
 ### Grant Permissions
 
 The relay needs permissions to read from the table. Internally, it uses DefaultAzureCredential to authenticate to Azure so you can use multiple methods to provide the necessary credentials. More details on DefaultAzureCredential can be found [here](https://learn.microsoft.com/en-us/dotnet/api/azure.identity.defaultazurecredential).
