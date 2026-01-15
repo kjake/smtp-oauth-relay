@@ -5,7 +5,8 @@ import base64
 import os
 import re
 import uuid
-from email import message_from_bytes
+from email import policy
+from email.parser import BytesParser
 from email.utils import parseaddr
 
 from custom import CustomController
@@ -133,6 +134,53 @@ def decode_uuid_or_base64url(input_str: str) -> str:
         return str(uuid.UUID(bytes=base64.urlsafe_b64decode(input_str + '=' * (-len(input_str) % 4))))
     except Exception:
         raise ValueError(f"Invalid base64url encoding in input '{input_str}'")
+
+
+def split_raw_message(raw_message: bytes) -> tuple[bytes, bytes, bytes]:
+    header_end = raw_message.find(b"\r\n\r\n")
+    separator = b"\r\n\r\n"
+    if header_end == -1:
+        header_end = raw_message.find(b"\n\n")
+        separator = b"\n\n"
+    if header_end == -1:
+        return raw_message, b"", b""
+    header_bytes = raw_message[:header_end]
+    body_bytes = raw_message[header_end + len(separator):]
+    return header_bytes, separator, body_bytes
+
+
+def update_raw_headers(raw_message: bytes, updates: dict[str, str | None]) -> bytes:
+    header_bytes, separator, body_bytes = split_raw_message(raw_message)
+    line_ending = b"\r\n" if b"\r\n" in header_bytes else b"\n"
+
+    updated_keys = {key.lower() for key in updates}
+    new_lines: list[bytes] = []
+    skip_header = False
+
+    for line in header_bytes.splitlines(keepends=True):
+        if line.startswith((b" ", b"\t")):
+            if skip_header:
+                continue
+            new_lines.append(line)
+            continue
+
+        header_name = line.split(b":", 1)[0].decode("utf-8", "replace").strip().lower()
+        skip_header = header_name in updated_keys
+        if skip_header:
+            continue
+        new_lines.append(line)
+
+    for header_name, header_value in updates.items():
+        if header_value is None:
+            continue
+        new_lines.append(f"{header_name}: {header_value}".encode("utf-8") + line_ending)
+
+    rebuilt_headers = b"".join(new_lines)
+    if separator:
+        return rebuilt_headers + separator + body_bytes
+    if body_bytes:
+        return rebuilt_headers + (line_ending + line_ending) + body_bytes
+    return rebuilt_headers
 
 
 def lookup_user(lookup_id: str) -> tuple[str, str, str|None]:
@@ -296,20 +344,20 @@ class Handler:
                 logging.error("No access token available in session")
                 return "530 5.7.0 Authentication required"
 
-            envel = message_from_bytes(envelope.content)
-            x_sender_raw = envel.get('X-Sender')
+            raw_message = envelope.content
+            parsed_message = BytesParser(policy=policy.default).parsebytes(raw_message)
+            x_sender_raw = parsed_message.get('X-Sender')
             x_sender_address = parse_email_address(x_sender_raw)
 
-            return_path_address = parse_email_address(envel.get('Return-Path'))
-            from_header_address = parse_email_address(envel.get('From'))
+            return_path_address = parse_email_address(parsed_message.get('Return-Path'))
+            from_header_address = parse_email_address(parsed_message.get('From'))
             envelope_from_address = parse_email_address(envelope.mail_from)
+            header_updates: dict[str, str | None] = {}
 
             if x_sender_raw is not None and not x_sender_address:
                 replacement_sender = return_path_address or from_header_address
                 if replacement_sender:
-                    while 'X-Sender' in envel:
-                        del envel['X-Sender']
-                    envel['X-Sender'] = replacement_sender
+                    header_updates['X-Sender'] = replacement_sender
                     x_sender_address = replacement_sender
 
             from_email = x_sender_address or return_path_address or from_header_address or envelope_from_address
@@ -317,8 +365,8 @@ class Handler:
             if not from_email:
                 domain_hint = extract_domain_hint(
                     x_sender_raw,
-                    envel.get('Return-Path'),
-                    envel.get('From'),
+                    parsed_message.get('Return-Path'),
+                    parsed_message.get('From'),
                     envelope.mail_from,
                     *(envelope.rcpt_tos or [])
                 )
@@ -329,13 +377,9 @@ class Handler:
                         domain_hint
                     )
                     from_email = failback_address
-                    while 'From' in envel:
-                        del envel['From']
-                    envel['From'] = failback_address
-                    if not parse_email_address(envel.get('X-Sender')):
-                        while 'X-Sender' in envel:
-                            del envel['X-Sender']
-                        envel['X-Sender'] = failback_address
+                    header_updates['From'] = failback_address
+                    if not parse_email_address(parsed_message.get('X-Sender')):
+                        header_updates['X-Sender'] = failback_address
                 else:
                     logging.error("Unable to determine sender address and no failback configured.")
                     return "554 Transaction failed"
@@ -343,13 +387,14 @@ class Handler:
             if session.lookup_from_email:
                 # some clients won't let you set a from address independent of the auth user. Issue: #36
                 # replace from header in envelope if lookup_from_email is set
-                while 'From' in envel:
-                    del envel['From']
-                envel['From'] = session.lookup_from_email
+                header_updates['From'] = session.lookup_from_email
                 from_email = session.lookup_from_email
 
+            if header_updates:
+                raw_message = update_raw_headers(raw_message, header_updates)
+
             # Send email using Microsoft Graph API
-            success = send_email(session.access_token, envel.as_bytes(), from_email)
+            success = send_email(session.access_token, raw_message, from_email)
 
             if success:
                 return "250 OK"
