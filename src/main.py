@@ -218,11 +218,14 @@ def get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
         raise
 
 
-def send_email(access_token: str, body: bytes, from_email: str, content_type: str) -> bool:
+GRAPH_MIME_CONTENT_TYPE = "text/plain"
+
+
+def send_email(access_token: str, body: bytes, from_email: str) -> bool:
     url = f"https://graph.microsoft.com/v1.0/users/{from_email}/sendMail"
     headers = {
         "Authorization": f"Bearer {access_token}",
-        "Content-Type": content_type
+        "Content-Type": GRAPH_MIME_CONTENT_TYPE
     }
     
     try:
@@ -345,10 +348,8 @@ class Handler:
                 envel['From'] = session.lookup_from_email
                 from_email = session.lookup_from_email
 
-            content_type = envel.get('Content-Type') or "text/plain"
-
             # Send email using Microsoft Graph API
-            success = send_email(session.access_token, envel.as_bytes(), from_email, content_type)
+            success = send_email(session.access_token, envel.as_bytes(), from_email)
 
             if success:
                 return "250 OK"
