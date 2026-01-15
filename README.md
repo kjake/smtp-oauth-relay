@@ -107,9 +107,14 @@ printer1@lookup
 - ✅ Multiple tenant support (single relay for multiple organizations)
 - ✅ Application Access Policies integration (restrict sender addresses)
 - ✅ Azure Tables for simplified credentials
+- ✅ DKIM signing for outbound mail
 - ✅ Sender address override
 - ✅ Horizontal scaling (stateless design)
 - ✅ Comprehensive logging and monitoring
+
+### DKIM Signing
+
+Enable DKIM signing by setting `DKIM_ENABLED=true` and providing a selector plus a PEM-formatted private key (either inline with `DKIM_PRIVATE_KEY` or via `DKIM_PRIVATE_KEY_PATH`). Ensure the selector and key match the domain used in the message `From` header so DKIM alignment passes. For multi-domain deployments, you can store per-domain selectors/keys in Azure Table storage and have the relay sign based on the sender domain. See the [configuration reference](docs/configuration.md) and [Azure Tables integration](docs/azure-tables.md) for details.
 
 ## Architecture
 

@@ -27,7 +27,7 @@ class CustomSMTP(SMTP):
             return await super().smtp_STARTTLS(arg)
         except TLSSetupException:
             if self.tls_context:
-                logging.error(f"TLS handshake with client failed.")
+                logging.error("TLS handshake with client failed.")
 
     
     def _create_session(self) -> Session:

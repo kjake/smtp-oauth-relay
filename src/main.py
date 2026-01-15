@@ -5,6 +5,7 @@ import base64
 import os
 import re
 import uuid
+from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr
@@ -94,6 +95,22 @@ DKIM_PRIVATE_KEY = load_env(
     default=None,
     sanitize=lambda x: x.replace('\\n', '\n') if x else x
 )
+DKIM_PRIVATE_KEY_PATH = load_env(
+    name='DKIM_PRIVATE_KEY_PATH',
+    default=None,
+    sanitize=lambda x: x.strip() if x else x
+)
+DKIM_ENABLED_RAW = os.getenv('DKIM_ENABLED')
+if DKIM_ENABLED_RAW is None:
+    DKIM_ENABLED = bool(DKIM_SELECTOR or DKIM_PRIVATE_KEY or DKIM_PRIVATE_KEY_PATH)
+else:
+    DKIM_ENABLED = load_env(
+        name='DKIM_ENABLED',
+        default='false',
+        valid_values=['true', 'false'],
+        sanitize=lambda x: x.lower(),
+        convert=lambda x: x == 'true'
+    )
 DKIM_CANONICALIZATION = load_env(
     name='DKIM_CANONICALIZATION',
     default='relaxed/relaxed',
@@ -105,8 +122,24 @@ DKIM_HEADERS = load_env(
     sanitize=lambda x: x.strip().lower() if x else x,
     convert=lambda x: [item.strip() for item in x.split(',') if item.strip()]
 )
+DKIM_TABLES_PARTITION_KEY = load_env(
+    name='DKIM_TABLES_PARTITION_KEY',
+    default='dkim'
+)
 
 ADDRESS_DOMAIN_PATTERN = re.compile(r'@([^>\s]+)')
+
+
+@dataclass(frozen=True)
+class DkimConfig:
+    selector: str
+    private_key: str
+    canonicalization: str
+    headers: list[str]
+    source: str
+
+
+DKIM_DEFAULT_CONFIG: DkimConfig | None = None
 
 
 def parse_email_address(value: str | None) -> str | None:
@@ -215,6 +248,141 @@ def parse_dkim_canonicalization(value: str) -> tuple[bytes, bytes]:
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ValueError(f"Invalid DKIM canonicalization value: {value}")
     return parts[0].encode("utf-8"), parts[1].encode("utf-8")
+
+
+def normalize_dkim_private_key(value: str) -> str:
+    normalized = value.strip()
+    if "BEGIN" not in normalized or "PRIVATE KEY" not in normalized:
+        raise ValueError("DKIM private key must be PEM-encoded")
+    return normalized
+
+
+def read_dkim_private_key_from_path(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return normalize_dkim_private_key(handle.read())
+    except FileNotFoundError as exc:
+        raise ValueError(f"DKIM private key file not found: {path}") from exc
+    except OSError as exc:
+        raise ValueError(f"Failed to read DKIM private key file: {path}") from exc
+
+
+def build_dkim_config(
+    selector: str | None,
+    private_key: str | None,
+    private_key_path: str | None,
+    canonicalization: str,
+    headers: list[str],
+    source: str
+) -> DkimConfig:
+    if not selector:
+        raise ValueError(f"DKIM selector is required ({source})")
+
+    if private_key_path:
+        if private_key:
+            logging.warning(
+                "Both DKIM_PRIVATE_KEY and DKIM_PRIVATE_KEY_PATH provided; using DKIM_PRIVATE_KEY_PATH (%s)",
+                source
+            )
+        resolved_key = read_dkim_private_key_from_path(private_key_path)
+    elif private_key:
+        resolved_key = normalize_dkim_private_key(private_key)
+    else:
+        raise ValueError(f"DKIM private key is required ({source})")
+
+    if not headers:
+        raise ValueError(f"DKIM headers list cannot be empty ({source})")
+
+    parse_dkim_canonicalization(canonicalization)
+
+    return DkimConfig(
+        selector=selector,
+        private_key=resolved_key,
+        canonicalization=canonicalization,
+        headers=headers,
+        source=source
+    )
+
+
+def initialize_dkim_config() -> None:
+    global DKIM_DEFAULT_CONFIG
+
+    if not DKIM_ENABLED:
+        if DKIM_SELECTOR or DKIM_PRIVATE_KEY or DKIM_PRIVATE_KEY_PATH:
+            logging.info("DKIM settings provided but DKIM is disabled (DKIM_ENABLED=false).")
+        DKIM_DEFAULT_CONFIG = None
+        return
+
+    try:
+        DKIM_DEFAULT_CONFIG = build_dkim_config(
+            selector=DKIM_SELECTOR,
+            private_key=DKIM_PRIVATE_KEY,
+            private_key_path=DKIM_PRIVATE_KEY_PATH,
+            canonicalization=DKIM_CANONICALIZATION,
+            headers=DKIM_HEADERS,
+            source="environment"
+        )
+        logging.info("DKIM signing enabled with selector '%s' (source: %s).",
+                     DKIM_DEFAULT_CONFIG.selector,
+                     DKIM_DEFAULT_CONFIG.source)
+    except ValueError as exc:
+        logging.error("DKIM configuration error: %s", exc)
+        raise
+
+
+def lookup_dkim_config(domain: str) -> DkimConfig | None:
+    if not AZURE_TABLES_URL:
+        return None
+
+    try:
+        credential = DefaultAzureCredential()
+        with TableClient.from_table_url(table_url=AZURE_TABLES_URL, credential=credential) as client: # pyright: ignore[reportArgumentType]
+            entities = client.query_entities(
+                query_filter=f"PartitionKey eq '{DKIM_TABLES_PARTITION_KEY}' and RowKey eq '{domain}'"
+            )
+            entity = None
+            for item in entities:
+                entity = item
+                break
+    except Exception as exc:
+        logging.error("Failed to query DKIM settings from Azure Table: %s", exc)
+        return None
+
+    if not entity:
+        return None
+
+    selector = entity.get('dkim_selector')
+    private_key = entity.get('dkim_private_key')
+    private_key_path = entity.get('dkim_private_key_path')
+    canonicalization = entity.get('dkim_canonicalization', DKIM_CANONICALIZATION)
+    headers_value = entity.get('dkim_headers')
+    if headers_value:
+        headers = [item.strip().lower() for item in str(headers_value).split(",") if item.strip()]
+    else:
+        headers = DKIM_HEADERS
+
+    try:
+        return build_dkim_config(
+            selector=selector,
+            private_key=private_key,
+            private_key_path=private_key_path,
+            canonicalization=canonicalization,
+            headers=headers,
+            source=f"azure table entry for domain {domain}"
+        )
+    except ValueError as exc:
+        logging.error("Invalid DKIM settings for domain %s: %s", domain, exc)
+        return None
+
+
+def get_dkim_config_for_sender(from_email: str) -> DkimConfig | None:
+    if not DKIM_ENABLED:
+        return None
+    domain = from_email.split("@", 1)[-1].lower()
+    config = lookup_dkim_config(domain)
+    if config:
+        return config
+    return DKIM_DEFAULT_CONFIG
 
 
 def sign_raw_message_with_dkim(
@@ -459,19 +627,26 @@ class Handler:
             if header_updates:
                 raw_message = update_raw_headers(raw_message, header_updates)
 
-            if DKIM_SELECTOR and DKIM_PRIVATE_KEY:
+            dkim_config = get_dkim_config_for_sender(from_email)
+            if dkim_config:
                 try:
                     raw_message = sign_raw_message_with_dkim(
                         raw_message=raw_message,
                         from_email=from_email,
-                        selector=DKIM_SELECTOR,
-                        private_key=DKIM_PRIVATE_KEY,
-                        canonicalization=DKIM_CANONICALIZATION,
-                        header_list=DKIM_HEADERS
+                        selector=dkim_config.selector,
+                        private_key=dkim_config.private_key,
+                        canonicalization=dkim_config.canonicalization,
+                        header_list=dkim_config.headers
                     )
                 except Exception as e:
-                    logging.exception(f"DKIM signing failed: {str(e)}")
+                    logging.exception("DKIM signing failed (source: %s): %s", dkim_config.source, e)
                     return "554 5.7.0 DKIM signing failed"
+            elif DKIM_ENABLED:
+                logging.error(
+                    "DKIM is enabled but no valid configuration is available for sender domain %s",
+                    from_email.split("@", 1)[-1]
+                )
+                return "554 5.7.0 DKIM configuration missing"
 
             # Send email using Microsoft Graph API
             success = send_email(session.access_token, raw_message, from_email)
@@ -489,6 +664,7 @@ class Handler:
 
 # noinspection PyShadowingNames
 async def amain():
+    initialize_dkim_config()
     match TLS_SOURCE:
         case 'file':
             context = sslContext.from_file(TLS_CERT_FILEPATH, TLS_KEY_FILEPATH)
@@ -529,7 +705,7 @@ async def amain():
             tls_context=context
         )
         controller.start()
-        logging.info(f"SMTP OAuth relay server started on port 8025")
+        logging.info("SMTP OAuth relay server started on port 8025")
     except Exception as e:
         logging.exception(f"Failed to start SMTP server: {str(e)}")
         if controller:
