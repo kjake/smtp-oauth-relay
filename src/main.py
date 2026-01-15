@@ -52,6 +52,11 @@ SERVER_GREETING = load_env(
     name='SERVER_GREETING', 
     default='Microsoft Graph SMTP OAuth Relay'
 )
+HTTP_TIMEOUT_SECONDS = load_env(
+    name='HTTP_TIMEOUT_SECONDS',
+    default='30',
+    convert=lambda x: float(x)
+)
 TLS_CERT_FILEPATH = load_env(
     name='TLS_CERT_FILEPATH',
     default='certs/cert.pem'
@@ -489,7 +494,8 @@ def get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
         response = requests.post(
             url=f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token", 
             data=data, 
-            headers=headers
+            headers=headers,
+            timeout=HTTP_TIMEOUT_SECONDS
         )
         response.raise_for_status()
         return response.json().get("access_token")
@@ -514,7 +520,7 @@ def send_email(access_token: str, body: bytes, from_email: str) -> bool:
         data = base64.b64encode(body)
         logging.debug(f"Sending email from {from_email}")
         
-        response = requests.post(url, data=data, headers=headers)
+        response = requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
         if response.status_code == 202:
             logging.info("Email sent successfully!")
             return True
