@@ -6,6 +6,7 @@ import os
 import re
 import uuid
 from email import message_from_bytes
+from email.utils import parseaddr
 
 from custom import CustomController
 from aiosmtpd.smtp import AuthResult
@@ -80,6 +81,40 @@ AZURE_TABLES_PARTITION_KEY = load_env(
     name='AZURE_TABLES_PARTITION_KEY',
     default='user'
 )
+
+ADDRESS_DOMAIN_PATTERN = re.compile(r'@([^>\s]+)')
+
+
+def parse_email_address(value: str | None) -> str | None:
+    if not value:
+        return None
+    candidate = value.strip()
+    if candidate in ('', '<>'):
+        return None
+    address = parseaddr(candidate)[1].strip()
+    if not address or address == '<>' or '@' not in address:
+        return None
+    return address
+
+
+def extract_domain_hint(*values: str | None) -> str | None:
+    for value in values:
+        if not value:
+            continue
+        match = ADDRESS_DOMAIN_PATTERN.search(value)
+        if match:
+            return match.group(1).strip().strip('>')
+    return None
+
+
+def failback_env_var_name(domain: str) -> str:
+    return f"{domain.replace('.', '_').upper()}_FROM_FAILBACK"
+
+
+def lookup_failback_address(domain: str | None) -> str | None:
+    if not domain:
+        return None
+    return os.getenv(failback_env_var_name(domain))
 
 
 def decode_uuid_or_base64url(input_str: str) -> str:
@@ -258,24 +293,60 @@ class Handler:
                 logging.error("No access token available in session")
                 return "530 5.7.0 Authentication required"
 
+            envel = message_from_bytes(envelope.content)
+            x_sender_raw = envel.get('X-Sender')
+            x_sender_address = parse_email_address(x_sender_raw)
+
+            return_path_address = parse_email_address(envel.get('Return-Path'))
+            from_header_address = parse_email_address(envel.get('From'))
+            envelope_from_address = parse_email_address(envelope.mail_from)
+
+            if x_sender_raw is not None and not x_sender_address:
+                replacement_sender = return_path_address or from_header_address
+                if replacement_sender:
+                    while 'X-Sender' in envel:
+                        del envel['X-Sender']
+                    envel['X-Sender'] = replacement_sender
+                    x_sender_address = replacement_sender
+
+            from_email = x_sender_address or return_path_address or from_header_address or envelope_from_address
+
+            if not from_email:
+                domain_hint = extract_domain_hint(
+                    x_sender_raw,
+                    envel.get('Return-Path'),
+                    envel.get('From'),
+                    envelope.mail_from,
+                    *(envelope.rcpt_tos or [])
+                )
+                failback_address = lookup_failback_address(domain_hint)
+                if failback_address:
+                    logging.warning(
+                        "Using failback sender address for malformed message (domain hint: %s)",
+                        domain_hint
+                    )
+                    from_email = failback_address
+                    while 'From' in envel:
+                        del envel['From']
+                    envel['From'] = failback_address
+                    if not parse_email_address(envel.get('X-Sender')):
+                        while 'X-Sender' in envel:
+                            del envel['X-Sender']
+                        envel['X-Sender'] = failback_address
+                else:
+                    logging.error("Unable to determine sender address and no failback configured.")
+                    return "554 Transaction failed"
+
             if session.lookup_from_email:
                 # some clients won't let you set a from address independent of the auth user. Issue: #36
                 # replace from header in envelope if lookup_from_email is set
-                envel = message_from_bytes(envelope.content)
-
-                # delete all occurrences of From header
                 while 'From' in envel:
-                    del envel['From']  
-                
-                # set new From header
+                    del envel['From']
                 envel['From'] = session.lookup_from_email
+                from_email = session.lookup_from_email
 
-                # Send email using Microsoft Graph API
-                success = send_email(session.access_token, envel.as_bytes(), session.lookup_from_email)
-
-            else:
-                # Send email using Microsoft Graph API
-                success = send_email(session.access_token, envelope.content, envelope.mail_from)
+            # Send email using Microsoft Graph API
+            success = send_email(session.access_token, envel.as_bytes(), from_email)
 
             if success:
                 return "250 OK"
