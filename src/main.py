@@ -9,6 +9,8 @@ from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr
 
+import dkim
+
 from custom import CustomController
 from aiosmtpd.smtp import AuthResult
 
@@ -81,6 +83,27 @@ AZURE_TABLES_URL = load_env(
 AZURE_TABLES_PARTITION_KEY = load_env(
     name='AZURE_TABLES_PARTITION_KEY',
     default='user'
+)
+DKIM_SELECTOR = load_env(
+    name='DKIM_SELECTOR',
+    default=None,
+    sanitize=lambda x: x.strip() if x else x
+)
+DKIM_PRIVATE_KEY = load_env(
+    name='DKIM_PRIVATE_KEY',
+    default=None,
+    sanitize=lambda x: x.replace('\\n', '\n') if x else x
+)
+DKIM_CANONICALIZATION = load_env(
+    name='DKIM_CANONICALIZATION',
+    default='relaxed/relaxed',
+    sanitize=lambda x: x.strip().lower() if x else x
+)
+DKIM_HEADERS = load_env(
+    name='DKIM_HEADERS',
+    default='from,to,subject,date,mime-version,content-type,content-transfer-encoding',
+    sanitize=lambda x: x.strip().lower() if x else x,
+    convert=lambda x: [item.strip() for item in x.split(',') if item.strip()]
 )
 
 ADDRESS_DOMAIN_PATTERN = re.compile(r'@([^>\s]+)')
@@ -185,6 +208,45 @@ def update_raw_headers(raw_message: bytes, updates: dict[str, str | None]) -> by
     if body_bytes:
         return rebuilt_headers + (line_ending + line_ending) + body_bytes
     return rebuilt_headers
+
+
+def parse_dkim_canonicalization(value: str) -> tuple[bytes, bytes]:
+    parts = value.split("/", maxsplit=1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(f"Invalid DKIM canonicalization value: {value}")
+    return parts[0].encode("utf-8"), parts[1].encode("utf-8")
+
+
+def sign_raw_message_with_dkim(
+    raw_message: bytes,
+    from_email: str,
+    selector: str,
+    private_key: str,
+    canonicalization: str,
+    header_list: list[str]
+) -> bytes:
+    header_bytes, separator, body_bytes = split_raw_message(raw_message)
+    line_ending = b"\r\n" if b"\r\n" in header_bytes else b"\n"
+
+    domain = from_email.split("@", 1)[-1].encode("utf-8")
+    canonicalize = parse_dkim_canonicalization(canonicalization)
+    include_headers = [header.encode("utf-8") for header in header_list]
+    signature = dkim.sign(
+        message=raw_message,
+        selector=selector.encode("utf-8"),
+        domain=domain,
+        privkey=private_key.encode("utf-8"),
+        canonicalize=canonicalize,
+        include_headers=include_headers
+    )
+    if not signature.endswith((b"\r\n", b"\n")):
+        signature += line_ending
+
+    if separator:
+        return signature + header_bytes + separator + body_bytes
+    if body_bytes:
+        return signature + header_bytes + (line_ending + line_ending) + body_bytes
+    return signature + header_bytes
 
 
 def lookup_user(lookup_id: str) -> tuple[str, str, str|None]:
@@ -396,6 +458,20 @@ class Handler:
 
             if header_updates:
                 raw_message = update_raw_headers(raw_message, header_updates)
+
+            if DKIM_SELECTOR and DKIM_PRIVATE_KEY:
+                try:
+                    raw_message = sign_raw_message_with_dkim(
+                        raw_message=raw_message,
+                        from_email=from_email,
+                        selector=DKIM_SELECTOR,
+                        private_key=DKIM_PRIVATE_KEY,
+                        canonicalization=DKIM_CANONICALIZATION,
+                        header_list=DKIM_HEADERS
+                    )
+                except Exception as e:
+                    logging.exception(f"DKIM signing failed: {str(e)}")
+                    return "554 5.7.0 DKIM signing failed"
 
             # Send email using Microsoft Graph API
             success = send_email(session.access_token, raw_message, from_email)
