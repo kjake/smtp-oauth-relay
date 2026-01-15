@@ -220,6 +220,48 @@ AZURE_TABLES_PARTITION_KEY=smtp-users
 EXAMPLE_COM_FROM_FAILBACK=noreply@example.com
 ```
 
+### DKIM Signing Configuration
+
+#### DKIM_SELECTOR
+- **Type**: String
+- **Default**: None (optional)
+- **Description**: DKIM selector used for signing. When set along with `DKIM_PRIVATE_KEY`, the relay signs outgoing messages.
+
+**Example**:
+```bash
+DKIM_SELECTOR=relay
+```
+
+#### DKIM_PRIVATE_KEY
+- **Type**: String (PEM-encoded key)
+- **Default**: None (optional)
+- **Description**: PEM-encoded private key used for DKIM signing. Use `\n` to represent newlines when setting via environment variable.
+
+**Example**:
+```bash
+DKIM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+```
+
+#### DKIM_CANONICALIZATION
+- **Type**: String
+- **Default**: `relaxed/relaxed`
+- **Description**: Canonicalization algorithms for DKIM signing in the form `header/body`.
+
+**Example**:
+```bash
+DKIM_CANONICALIZATION=relaxed/relaxed
+```
+
+#### DKIM_HEADERS
+- **Type**: Comma-separated list
+- **Default**: `from,to,subject,date,mime-version,content-type,content-transfer-encoding`
+- **Description**: Ordered list of headers to include in the DKIM signature.
+
+**Example**:
+```bash
+DKIM_HEADERS=from,to,subject,date,mime-version,content-type,content-transfer-encoding
+```
+
 ## Configuration Examples
 
 ### Production Configuration (File-based TLS)
@@ -267,6 +309,10 @@ AZURE_KEY_VAULT_URL=https://my-keyvault.vault.azure.net/
 AZURE_KEY_VAULT_CERT_NAME=smtp-cert
 AZURE_TABLES_URL=https://mystorageaccount.table.core.windows.net/users
 AZURE_TABLES_PARTITION_KEY=smtp-users
+DKIM_SELECTOR=relay
+DKIM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+DKIM_CANONICALIZATION=relaxed/relaxed
+DKIM_HEADERS=from,to,subject,date,mime-version,content-type,content-transfer-encoding
 USERNAME_DELIMITER=@
 ```
 
