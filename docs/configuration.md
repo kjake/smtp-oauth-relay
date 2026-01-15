@@ -222,6 +222,17 @@ EXAMPLE_COM_FROM_FAILBACK=noreply@example.com
 
 ### DKIM Signing Configuration
 
+#### DKIM_ENABLED
+- **Type**: Boolean
+- **Default**: `false`
+- **Valid Values**: `true`, `false` (case-insensitive)
+- **Description**: Enables DKIM signing when `true`. When enabled, the relay validates DKIM settings at startup and logs errors for missing or malformed keys.
+
+**Example**:
+```bash
+DKIM_ENABLED=true
+```
+
 #### DKIM_SELECTOR
 - **Type**: String
 - **Default**: None (optional)
@@ -240,6 +251,16 @@ DKIM_SELECTOR=relay
 **Example**:
 ```bash
 DKIM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+```
+
+#### DKIM_PRIVATE_KEY_PATH
+- **Type**: String (file path)
+- **Default**: None (optional)
+- **Description**: Path to a PEM-encoded private key file for DKIM signing. If both `DKIM_PRIVATE_KEY` and `DKIM_PRIVATE_KEY_PATH` are set, the file path is used.
+
+**Example**:
+```bash
+DKIM_PRIVATE_KEY_PATH=/etc/smtp-relay/dkim/private.key
 ```
 
 #### DKIM_CANONICALIZATION
@@ -261,6 +282,19 @@ DKIM_CANONICALIZATION=relaxed/relaxed
 ```bash
 DKIM_HEADERS=from,to,subject,date,mime-version,content-type,content-transfer-encoding
 ```
+
+#### DKIM_TABLES_PARTITION_KEY
+- **Type**: String
+- **Default**: `dkim`
+- **Description**: Partition key used when looking up DKIM settings per sender domain in Azure Table storage. The RowKey should match the sender domain (e.g., `example.com`).
+
+**Example**:
+```bash
+DKIM_TABLES_PARTITION_KEY=dkim
+```
+
+**Domain alignment**:
+Ensure the selector and private key correspond to the domain used in the message's `From` header. DKIM requires alignment between the signing domain and the sender domain.
 
 ## Configuration Examples
 
@@ -313,6 +347,7 @@ DKIM_SELECTOR=relay
 DKIM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
 DKIM_CANONICALIZATION=relaxed/relaxed
 DKIM_HEADERS=from,to,subject,date,mime-version,content-type,content-transfer-encoding
+DKIM_ENABLED=true
 USERNAME_DELIMITER=@
 ```
 

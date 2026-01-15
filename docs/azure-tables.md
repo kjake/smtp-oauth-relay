@@ -154,6 +154,8 @@ AZURE_TABLES_PARTITION_KEY=user
 
 DKIM signing works with Azure Tables lookup as long as you configure the DKIM-related environment variables (the relay signs after resolving the sender address from the table). See the [configuration reference](configuration.md) for the full list.
 
+For multi-domain DKIM, you can add per-domain settings in the same table using a separate partition key (default `dkim`). Each row's `RowKey` should be the sender domain, and the relay will use those settings when the `From` domain changes.
+
 ### Grant Permissions
 
 The relay needs permissions to read from the table. Internally, it uses DefaultAzureCredential to authenticate to Azure so you can use multiple methods to provide the necessary credentials. More details on DefaultAzureCredential can be found [here](https://learn.microsoft.com/en-us/dotnet/api/azure.identity.defaultazurecredential).
@@ -202,6 +204,18 @@ For an extensive list of environment variables supported by DefaultAzureCredenti
 | client_id | String | Application client UUID | `abcdefab-1234-5678-abcd-abcdefabcdef` |
 | from_email | String | Override sender email address (optional) | `app1@example.com` |
 | description | String | Human-readable description (not used by relay) | `Application 1 credentials` |
+
+### Optional DKIM Columns (PartitionKey = `dkim`)
+
+| Column | Type | Description | Example |
+|--------|------|-------------|---------|
+| PartitionKey | String | DKIM partition key (set by `DKIM_TABLES_PARTITION_KEY`) | `dkim` |
+| RowKey | String | Sender domain | `example.com` |
+| dkim_selector | String | Selector used for the domain | `relay` |
+| dkim_private_key | String | PEM-encoded private key (optional if using `dkim_private_key_path`) | `-----BEGIN PRIVATE KEY-----...` |
+| dkim_private_key_path | String | Path to PEM key file (optional) | `/etc/smtp-relay/dkim/example.key` |
+| dkim_canonicalization | String | Canonicalization value | `relaxed/relaxed` |
+| dkim_headers | String | Comma-separated header list | `from,to,subject,date` |
 
 ## Usage
 
