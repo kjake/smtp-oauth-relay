@@ -423,7 +423,12 @@ def sign_raw_message_with_dkim(
 ) -> bytes:
     header_bytes, separator, body_bytes = split_raw_message(raw_message)
     normalized_header_bytes = header_bytes.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
-    normalized_separator = b"\r\n\r\n" if separator or body_bytes else b""
+    if separator in (b"\r\n", b"\n"):
+        normalized_separator = b"\r\n"
+    elif separator:
+        normalized_separator = b"\r\n\r\n"
+    else:
+        normalized_separator = b""
     normalized_message = normalized_header_bytes
     if normalized_separator:
         normalized_message += normalized_separator + body_bytes

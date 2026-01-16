@@ -152,6 +152,25 @@ def test_sign_raw_message_with_dkim(monkeypatch: pytest.MonkeyPatch) -> None:
     assert header_lines[2].startswith(b"Received:")
 
 
+def test_sign_raw_message_with_dkim_preserves_blank_header_separator(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_sign(**kwargs):
+        return b"DKIM-Signature: test\r\n"
+
+    monkeypatch.setattr(main.dkim, "sign", lambda **kwargs: fake_sign(**kwargs))
+    raw = b"\r\nBody"
+    signed = main.sign_raw_message_with_dkim(
+        raw_message=raw,
+        from_email="user@example.com",
+        selector="relay",
+        private_key="-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+        canonicalization="relaxed/relaxed",
+        header_list=["from"]
+    )
+    assert b"DKIM-Signature: test\r\n\r\nBody" == signed
+
+
 def test_lookup_user_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main, "AZURE_TABLES_URL", "https://example.com/table")
 
