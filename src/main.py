@@ -8,12 +8,12 @@ import uuid
 from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
-from email.utils import parseaddr
+from email.utils import parseaddr, parsedate_to_datetime, getaddresses
 
 import dkim
 
 from custom import CustomController
-from aiosmtpd.smtp import AuthResult
+from aiosmtpd.smtp import AuthResult, MISSING
 
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableClient
@@ -156,6 +156,16 @@ DKIM_TABLES_PARTITION_KEY = load_env(
 )
 
 ADDRESS_DOMAIN_PATTERN = re.compile(r'@([^>\s]+)')
+SMTP_DOT_ATOM_TEXT = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
+SMTP_DOT_ATOM = rf"{SMTP_DOT_ATOM_TEXT}(?:\.{SMTP_DOT_ATOM_TEXT})*"
+SMTP_QUOTED_STRING = r"\"(?:[\x20-\x21\x23-\x5B\x5D-\x7E]|\\[\x20-\x7E])*\""
+SMTP_ADDRESS_LITERAL = r"\[(?:IPv6:[0-9A-Fa-f:.]+|[\x21-\x5A\x5E-\x7E]+)\]"
+SMTP_DOMAIN = rf"(?:{SMTP_DOT_ATOM}|{SMTP_ADDRESS_LITERAL})"
+SMTP_LOCAL_PART = rf"(?:{SMTP_DOT_ATOM}|{SMTP_QUOTED_STRING})"
+SMTP_DOT_ATOM_PATTERN = re.compile(rf"^{SMTP_DOT_ATOM}$")
+SMTP_QUOTED_STRING_PATTERN = re.compile(rf"^{SMTP_QUOTED_STRING}$")
+SMTP_DOMAIN_PATTERN = re.compile(rf"^{SMTP_DOMAIN}$")
+BARE_LF_PATTERN = re.compile(br"(?<!\r)\n")
 
 
 @dataclass(frozen=True)
@@ -180,6 +190,52 @@ def parse_email_address(value: str | None) -> str | None:
     if not address or address == '<>' or '@' not in address:
         return None
     return address
+
+
+def is_valid_smtp_mailbox(address: str, *, allow_null: bool = False) -> bool:
+    if allow_null and address == "<>":
+        return True
+    if not address or "<" in address or ">" in address:
+        return False
+    if address.count("@") != 1:
+        return False
+    local_part, domain_part = address.split("@", 1)
+    if not (SMTP_DOT_ATOM_PATTERN.match(local_part) or SMTP_QUOTED_STRING_PATTERN.match(local_part)):
+        return False
+    if not SMTP_DOMAIN_PATTERN.match(domain_part):
+        return False
+    if len(local_part) > 64 or len(domain_part) > 255:
+        return False
+    if domain_part.startswith("[") and domain_part.endswith("]"):
+        return True
+    labels = domain_part.split(".")
+    if any(len(label) == 0 or len(label) > 63 for label in labels):
+        return False
+    return True
+
+
+def validate_rfc5322_message(raw_message: bytes) -> str | None:
+    if BARE_LF_PATTERN.search(raw_message):
+        return "550 5.6.0 Message contains bare LF line endings"
+
+    parsed_message = BytesParser(policy=policy.SMTP).parsebytes(raw_message)
+    from_header = parsed_message.get("From")
+    date_header = parsed_message.get("Date")
+    if not from_header:
+        return "554 5.6.0 Missing required header: From"
+    if not date_header:
+        return "554 5.6.0 Missing required header: Date"
+
+    addresses = [addr for _, addr in getaddresses([from_header]) if addr]
+    if not addresses or any("@" not in addr for addr in addresses):
+        return "554 5.6.0 Invalid From header"
+
+    try:
+        if parsedate_to_datetime(date_header) is None:
+            return "554 5.6.0 Invalid Date header"
+    except (TypeError, ValueError):
+        return "554 5.6.0 Invalid Date header"
+    return None
 
 
 def extract_domain_hint(*values: str | None) -> str | None:
@@ -629,6 +685,18 @@ class Authenticator:
 
 
 class Handler:
+    async def handle_MAIL(self, server, session, envelope, address, mail_options):
+        if not is_valid_smtp_mailbox(address, allow_null=True):
+            logging.warning("Rejected malformed MAIL FROM address: %s", address)
+            return "553 5.1.3 Error: malformed address"
+        return MISSING
+
+    async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
+        if not is_valid_smtp_mailbox(address, allow_null=False):
+            logging.warning("Rejected malformed RCPT TO address: %s", address)
+            return "553 5.1.3 Error: malformed address"
+        return MISSING
+
     async def handle_DATA(self, server, session, envelope):
         try:
             logging.info(f"Message from {envelope.mail_from} to {envelope.rcpt_tos}")
@@ -638,7 +706,12 @@ class Handler:
                 return "530 5.7.0 Authentication required"
 
             raw_message = envelope.content
-            parsed_message = BytesParser(policy=policy.default).parsebytes(raw_message)
+            rfc5322_error = validate_rfc5322_message(raw_message)
+            if rfc5322_error:
+                logging.error("RFC 5322 validation failed: %s", rfc5322_error)
+                return rfc5322_error
+
+            parsed_message = BytesParser(policy=policy.SMTP).parsebytes(raw_message)
             x_sender_raw = parsed_message.get('X-Sender')
             x_sender_address = parse_email_address(x_sender_raw)
 
