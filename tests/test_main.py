@@ -259,7 +259,12 @@ def test_handler_requires_auth_token() -> None:
     envelope = types.SimpleNamespace(
         mail_from="sender@example.com",
         rcpt_tos=["recipient@example.com"],
-        content=b"From: sender@example.com\r\nTo: recipient@example.com\r\n\r\nBody"
+        content=(
+            b"From: sender@example.com\r\n"
+            b"To: recipient@example.com\r\n"
+            b"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n"
+            b"\r\nBody"
+        )
     )
     response = __import__("asyncio").run(handler.handle_DATA(None, session, envelope))
     assert response.startswith("530")
@@ -274,7 +279,33 @@ def test_handler_sends_email(monkeypatch: pytest.MonkeyPatch) -> None:
     envelope = types.SimpleNamespace(
         mail_from="sender@example.com",
         rcpt_tos=["recipient@example.com"],
-        content=b"From: sender@example.com\r\nTo: recipient@example.com\r\n\r\nBody"
+        content=(
+            b"From: sender@example.com\r\n"
+            b"To: recipient@example.com\r\n"
+            b"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n"
+            b"\r\nBody"
+        )
     )
     response = __import__("asyncio").run(handler.handle_DATA(None, session, envelope))
     assert response == "250 OK"
+
+
+def test_handle_mail_rejects_invalid_sender() -> None:
+    handler = main.Handler()
+    response = __import__("asyncio").run(
+        handler.handle_MAIL(None, None, None, "invalid address", [])
+    )
+    assert response.startswith("553")
+
+
+def test_handle_rcpt_rejects_null_recipient() -> None:
+    handler = main.Handler()
+    response = __import__("asyncio").run(
+        handler.handle_RCPT(None, None, None, "<>", [])
+    )
+    assert response.startswith("553")
+
+
+def test_validate_rfc5322_requires_date() -> None:
+    raw_message = b"From: sender@example.com\r\n\r\nBody"
+    assert main.validate_rfc5322_message(raw_message).startswith("554")
