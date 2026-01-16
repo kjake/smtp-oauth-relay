@@ -422,27 +422,52 @@ def sign_raw_message_with_dkim(
     header_list: list[str]
 ) -> bytes:
     header_bytes, separator, body_bytes = split_raw_message(raw_message)
-    line_ending = b"\r\n" if b"\r\n" in header_bytes else b"\n"
+    normalized_header_bytes = header_bytes.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    normalized_separator = b"\r\n\r\n" if separator or body_bytes else b""
+    normalized_message = normalized_header_bytes
+    if normalized_separator:
+        normalized_message += normalized_separator + body_bytes
 
     domain = from_email.split("@", 1)[-1].encode("utf-8")
     canonicalize = parse_dkim_canonicalization(canonicalization)
     include_headers = [header.encode("utf-8") for header in header_list]
     signature = dkim.sign(
-        message=raw_message,
+        message=normalized_message,
         selector=selector.encode("utf-8"),
         domain=domain,
         privkey=private_key.encode("utf-8"),
         canonicalize=canonicalize,
         include_headers=include_headers
     )
-    if not signature.endswith((b"\r\n", b"\n")):
-        signature += line_ending
+    signature = signature.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    signature_lines = signature.rstrip(b"\r\n").split(b"\r\n")
+    if len(signature_lines) > 1:
+        signature_lines = [
+            signature_lines[0],
+            *[
+                line if line.startswith((b" ", b"\t")) else b" " + line
+                for line in signature_lines[1:]
+            ]
+        ]
+    signature = b"\r\n".join(signature_lines) + b"\r\n"
 
-    if separator:
-        return signature + header_bytes + separator + body_bytes
-    if body_bytes:
-        return signature + header_bytes + (line_ending + line_ending) + body_bytes
-    return signature + header_bytes
+    header_lines = normalized_header_bytes.splitlines(keepends=True)
+    insert_at = 0
+    for index, line in enumerate(header_lines):
+        if line.startswith((b" ", b"\t")):
+            continue
+        header_name = line.split(b":", 1)[0].strip().lower()
+        if header_name == b"received":
+            insert_at = index
+            break
+    if header_lines:
+        rebuilt_headers = b"".join(header_lines[:insert_at]) + signature + b"".join(header_lines[insert_at:])
+    else:
+        rebuilt_headers = signature
+
+    if normalized_separator:
+        return rebuilt_headers + normalized_separator + body_bytes
+    return rebuilt_headers
 
 
 def lookup_user(lookup_id: str) -> tuple[str, str, str|None]:
