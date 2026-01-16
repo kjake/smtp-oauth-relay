@@ -13,7 +13,7 @@ from email.utils import parseaddr, parsedate_to_datetime, getaddresses
 import dkim
 
 from custom import CustomController
-from aiosmtpd.smtp import AuthResult
+from aiosmtpd.smtp import AuthResult, MISSING
 
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableClient
@@ -689,13 +689,13 @@ class Handler:
         if not is_valid_smtp_mailbox(address, allow_null=True):
             logging.warning("Rejected malformed MAIL FROM address: %s", address)
             return "553 5.1.3 Error: malformed address"
-        return None
+        return MISSING
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
         if not is_valid_smtp_mailbox(address, allow_null=False):
             logging.warning("Rejected malformed RCPT TO address: %s", address)
             return "553 5.1.3 Error: malformed address"
-        return None
+        return MISSING
 
     async def handle_DATA(self, server, session, envelope):
         try:
