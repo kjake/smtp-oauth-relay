@@ -133,10 +133,10 @@ def test_get_dkim_config_for_sender_returns_default(monkeypatch: pytest.MonkeyPa
 
 def test_sign_raw_message_with_dkim(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_sign(**kwargs):
-        return b"DKIM-Signature: test\r\n"
+        return b"DKIM-Signature: test\n\tvalue\n"
 
     monkeypatch.setattr(main.dkim, "sign", lambda **kwargs: fake_sign(**kwargs))
-    raw = b"From: user@example.com\r\nSubject: Hi\r\n\r\nBody"
+    raw = b"Received: by mx.example.com\nFrom: user@example.com\nSubject: Hi\n\nBody"
     signed = main.sign_raw_message_with_dkim(
         raw_message=raw,
         from_email="user@example.com",
@@ -145,7 +145,30 @@ def test_sign_raw_message_with_dkim(monkeypatch: pytest.MonkeyPatch) -> None:
         canonicalization="relaxed/relaxed",
         header_list=["from", "subject"]
     )
-    assert signed.startswith(b"DKIM-Signature: test")
+    header_block = signed.split(b"\r\n\r\n", 1)[0]
+    header_lines = header_block.split(b"\r\n")
+    assert header_lines[0] == b"DKIM-Signature: test"
+    assert header_lines[1].startswith(b"\t")
+    assert header_lines[2].startswith(b"Received:")
+
+
+def test_sign_raw_message_with_dkim_preserves_blank_header_separator(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_sign(**kwargs):
+        return b"DKIM-Signature: test\r\n"
+
+    monkeypatch.setattr(main.dkim, "sign", lambda **kwargs: fake_sign(**kwargs))
+    raw = b"\r\nBody"
+    signed = main.sign_raw_message_with_dkim(
+        raw_message=raw,
+        from_email="user@example.com",
+        selector="relay",
+        private_key="-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+        canonicalization="relaxed/relaxed",
+        header_list=["from"]
+    )
+    assert b"DKIM-Signature: test\r\n\r\nBody" == signed
 
 
 def test_lookup_user_success(monkeypatch: pytest.MonkeyPatch) -> None:
