@@ -121,11 +121,34 @@ DKIM_CANONICALIZATION = load_env(
     default='relaxed/relaxed',
     sanitize=lambda x: x.strip().lower() if x else x
 )
+DKIM_HEADER_CANONICAL_NAMES = {
+    "from": "From",
+    "to": "To",
+    "subject": "Subject",
+    "date": "Date",
+    "message-id": "Message-ID",
+    "mime-version": "MIME-Version",
+    "content-type": "Content-Type",
+    "content-transfer-encoding": "Content-Transfer-Encoding",
+}
+
+
+def normalize_dkim_header_name(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    return DKIM_HEADER_CANONICAL_NAMES.get(cleaned.lower(), cleaned)
+
+
+def normalize_dkim_header_list(value: str) -> list[str]:
+    return [item for item in (normalize_dkim_header_name(name) for name in value.split(",")) if item]
+
+
 DKIM_HEADERS = load_env(
     name='DKIM_HEADERS',
-    default='from,to,subject,date,mime-version,content-type,content-transfer-encoding',
-    sanitize=lambda x: x.strip().lower() if x else x,
-    convert=lambda x: [item.strip() for item in x.split(',') if item.strip()]
+    default='from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding',
+    sanitize=lambda x: x.strip() if x else x,
+    convert=normalize_dkim_header_list
 )
 DKIM_TABLES_PARTITION_KEY = load_env(
     name='DKIM_TABLES_PARTITION_KEY',
@@ -362,7 +385,7 @@ def lookup_dkim_config(domain: str) -> DkimConfig | None:
     canonicalization = entity.get('dkim_canonicalization', DKIM_CANONICALIZATION)
     headers_value = entity.get('dkim_headers')
     if headers_value:
-        headers = [item.strip().lower() for item in str(headers_value).split(",") if item.strip()]
+        headers = normalize_dkim_header_list(str(headers_value))
     else:
         headers = DKIM_HEADERS
 

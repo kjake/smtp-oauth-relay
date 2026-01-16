@@ -285,12 +285,12 @@ DKIM_CANONICALIZATION=relaxed/relaxed
 
 #### DKIM_HEADERS
 - **Type**: Comma-separated list
-- **Default**: `from,to,subject,date,mime-version,content-type,content-transfer-encoding`
+- **Default**: `from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding`
 - **Description**: Ordered list of headers to include in the DKIM signature.
 
 **Example**:
 ```bash
-DKIM_HEADERS=from,to,subject,date,mime-version,content-type,content-transfer-encoding
+DKIM_HEADERS=from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding
 ```
 
 #### DKIM_TABLES_PARTITION_KEY
@@ -356,7 +356,7 @@ AZURE_TABLES_PARTITION_KEY=smtp-users
 DKIM_SELECTOR=relay
 DKIM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
 DKIM_CANONICALIZATION=relaxed/relaxed
-DKIM_HEADERS=from,to,subject,date,mime-version,content-type,content-transfer-encoding
+DKIM_HEADERS=from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding
 DKIM_ENABLED=true
 USERNAME_DELIMITER=@
 ```

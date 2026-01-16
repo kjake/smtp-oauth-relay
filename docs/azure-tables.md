@@ -215,7 +215,7 @@ For an extensive list of environment variables supported by DefaultAzureCredenti
 | dkim_private_key | String | PEM-encoded private key (optional if using `dkim_private_key_path`) | `-----BEGIN PRIVATE KEY-----...` |
 | dkim_private_key_path | String | Path to PEM key file (optional) | `/etc/smtp-relay/dkim/example.key` |
 | dkim_canonicalization | String | Canonicalization value | `relaxed/relaxed` |
-| dkim_headers | String | Comma-separated header list | `from,to,subject,date` |
+| dkim_headers | String | Comma-separated header list | `from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding` |
 
 ## Usage
 
