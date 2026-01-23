@@ -272,7 +272,7 @@ def test_send_email_success(monkeypatch: pytest.MonkeyPatch) -> None:
         text = ""
 
     monkeypatch.setattr(main.requests, "post", lambda *args, **kwargs: FakeResponse())
-    assert main.send_email("token", b"Body", "user@example.com") == (True, None)
+    assert main.send_email("token", b"Body", "user@example.com") == (True, None, 202)
 
 
 def test_authenticator_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -305,7 +305,7 @@ def test_handler_requires_auth_token() -> None:
 
 
 def test_handler_sends_email(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(main, "send_email", lambda *args, **kwargs: (True, None))
+    monkeypatch.setattr(main, "send_email", lambda *args, **kwargs: (True, None, 202))
     monkeypatch.setattr(main, "DKIM_ENABLED", False)
 
     handler = main.Handler()
