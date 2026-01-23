@@ -291,7 +291,7 @@ def extract_domain_hint(*values: str | None) -> str | None:
             continue
         match = ADDRESS_DOMAIN_PATTERN.search(value)
         if match:
-            return match.group(1).strip().strip('>')
+            return match.group(1).strip().strip('>').lower()
     return None
 
 
