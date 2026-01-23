@@ -749,7 +749,7 @@ def get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
 GRAPH_MIME_CONTENT_TYPE = "text/plain"
 
 
-def send_email(access_token: str, body: bytes, from_email: str) -> tuple[bool, str | None]:
+def send_email(access_token: str, body: bytes, from_email: str) -> tuple[bool, str | None, int | None]:
     url = f"https://graph.microsoft.com/v1.0/users/{from_email}/sendMail"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -763,13 +763,13 @@ def send_email(access_token: str, body: bytes, from_email: str) -> tuple[bool, s
         response = requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
         if response.status_code == 202:
             logging.info("Email sent successfully!")
-            return True, None
+            return True, None, response.status_code
         error_detail = f"Status code {response.status_code}; response body: {response.text}"
         logging.error(f"Failed to send email: {error_detail}")
-        return False, error_detail
+        return False, error_detail, response.status_code
     except Exception as e:
         logging.exception(f"Exception while sending email: {str(e)}")
-        return False, str(e)
+        return False, str(e), None
 
 
 def send_failure_notification(
@@ -817,7 +817,7 @@ def send_failure_notification(
     message["Message-ID"] = make_msgid(domain=from_email.split("@")[-1] if "@" in from_email else None)
     message.set_content("\n".join(body_lines))
 
-    success, notification_error = send_email(
+    success, notification_error, _ = send_email(
         access_token=access_token,
         body=message.as_bytes(policy=policy.SMTP),
         from_email=from_email
@@ -996,7 +996,7 @@ class Handler:
                 return "554 5.7.0 DKIM configuration missing"
 
             # Send email using Microsoft Graph API
-            success, error_detail = send_email(session.access_token, raw_message, from_email)
+            success, error_detail, status_code = send_email(session.access_token, raw_message, from_email)
 
             if success:
                 return "250 OK"
@@ -1017,7 +1017,10 @@ class Handler:
                         "Failure notification configured for domain %s but no sender address is available",
                         domain_hint
                     )
-            return "554 Transaction failed"
+            await asyncio.sleep(0.5)
+            if status_code == 404:
+                return "551 User not local"
+            return "451 Action aborted"
                 
         except Exception as e:
             logging.exception(f"Error handling DATA command: {str(e)}")
