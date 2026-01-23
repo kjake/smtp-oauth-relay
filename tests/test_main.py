@@ -32,6 +32,19 @@ def test_lookup_failback_address(monkeypatch: pytest.MonkeyPatch) -> None:
     assert main.lookup_failback_address(None) is None
 
 
+def test_failure_notification_env_var_name() -> None:
+    assert main.failure_notification_env_var_name("example.com") == "EXAMPLE_COM_FAILURE_NOTIFICATION"
+
+
+def test_lookup_failure_notification_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    domain = "example.com"
+    monkeypatch.setenv("EXAMPLE_COM_FAILURE_NOTIFICATION", "alert@example.com")
+    assert (
+        main.lookup_failure_notification_address(domain, None)
+        == "alert@example.com"
+    )
+
+
 def test_decode_uuid_or_base64url_roundtrip() -> None:
     value = uuid.uuid4()
     encoded = base64.urlsafe_b64encode(value.bytes).decode().rstrip("=")
@@ -67,6 +80,27 @@ def test_update_raw_headers_replaces_existing() -> None:
     assert b"From: old@example.com" not in updated
     assert b"From: new@example.com" in updated
     assert b"X-Test: yes" in updated
+
+
+def test_build_reply_to_value_appends() -> None:
+    existing = "ops@example.com"
+    original = "Group <group@example.com>"
+    reply_to = main.build_reply_to_value(existing, original)
+    assert reply_to == "ops@example.com, Group <group@example.com>"
+
+
+def test_is_remap_enabled_checks_env_and_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "FROM_REMAP_DOMAINS", {"example.com"})
+    monkeypatch.setattr(main, "FROM_REMAP_ADDRESSES", {"accounting@example.com"})
+    assert main.is_remap_enabled("example.com", None, None)
+    assert main.is_remap_enabled("other.com", None, "accounting@example.com")
+    settings = main.DomainSettings(
+        from_remap=True,
+        remap_addresses={"ops@example.com"},
+        failure_notification=None
+    )
+    assert main.is_remap_enabled("other.com", settings, None)
+    assert main.is_remap_enabled("other.com", settings, "ops@example.com")
 
 
 def test_parse_dkim_canonicalization() -> None:
@@ -238,7 +272,7 @@ def test_send_email_success(monkeypatch: pytest.MonkeyPatch) -> None:
         text = ""
 
     monkeypatch.setattr(main.requests, "post", lambda *args, **kwargs: FakeResponse())
-    assert main.send_email("token", b"Body", "user@example.com") is True
+    assert main.send_email("token", b"Body", "user@example.com") == (True, None)
 
 
 def test_authenticator_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,7 +305,7 @@ def test_handler_requires_auth_token() -> None:
 
 
 def test_handler_sends_email(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(main, "send_email", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "send_email", lambda *args, **kwargs: (True, None))
     monkeypatch.setattr(main, "DKIM_ENABLED", False)
 
     handler = main.Handler()

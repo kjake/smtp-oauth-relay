@@ -218,6 +218,16 @@ See [Azure Tables Integration](azure-tables.md) for detailed setup.
 AZURE_TABLES_PARTITION_KEY=smtp-users
 ```
 
+#### DOMAIN_SETTINGS_TABLES_PARTITION_KEY
+- **Type**: String
+- **Default**: `domain`
+- **Description**: The partition key to use when querying Azure Table entries for per-domain settings such as From remapping and failure notifications.
+
+**Example**:
+```bash
+DOMAIN_SETTINGS_TABLES_PARTITION_KEY=domain-settings
+```
+
 ### Sender Failback Configuration
 
 #### `<DOMAIN>_FROM_FAILBACK`
@@ -228,6 +238,36 @@ AZURE_TABLES_PARTITION_KEY=smtp-users
 **Example**:
 ```bash
 EXAMPLE_COM_FROM_FAILBACK=noreply@example.com
+```
+
+#### FROM_REMAP_DOMAINS
+- **Type**: Comma-separated list of domains
+- **Default**: None (optional)
+- **Description**: Enables From address remapping for the listed domains. When enabled, the relay replaces the message From header with the corresponding `<DOMAIN>_FROM_FAILBACK` value, and inserts the original From as a Reply-To header so replies still reach the original sender. This works alongside Azure Table settings (see `DOMAIN_SETTINGS_TABLES_PARTITION_KEY`) for per-domain control.
+
+**Example**:
+```bash
+FROM_REMAP_DOMAINS=example.com,legacy.internal
+```
+
+#### FROM_REMAP_ADDRESSES
+- **Type**: Comma-separated list of email addresses
+- **Default**: None (optional)
+- **Description**: Enables From address remapping for specific mailbox addresses. Use this when only certain senders (such as distribution groups) need remapping while other addresses in the same domain remain unchanged.
+
+**Example**:
+```bash
+FROM_REMAP_ADDRESSES=accounting@example.com,ops@example.com
+```
+
+#### `<DOMAIN>_FAILURE_NOTIFICATION`
+- **Type**: String (email address)
+- **Default**: None (optional)
+- **Description**: Address that receives failure notifications when sending a message fails for the given domain. The relay sends a basic summary including From/To/Subject and the error. The variable name is derived from the sender domain by replacing `.` with `_` and uppercasing.
+
+**Example**:
+```bash
+EXAMPLE_COM_FAILURE_NOTIFICATION=mail-ops@example.com
 ```
 
 ### DKIM Signing Configuration
