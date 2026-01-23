@@ -156,6 +156,8 @@ DKIM signing works with Azure Tables lookup as long as you configure the DKIM-re
 
 For multi-domain DKIM, you can add per-domain settings in the same table using a separate partition key (default `dkim`). Each row's `RowKey` should be the sender domain, and the relay will use those settings when the `From` domain changes.
 
+Per-domain From remapping and failure notifications also use the same table. Configure `DOMAIN_SETTINGS_TABLES_PARTITION_KEY` (default `domain`) and add one row per sender domain. You can optionally add address-level remapping by providing a comma-separated list of addresses.
+
 ### Grant Permissions
 
 The relay needs permissions to read from the table. Internally, it uses DefaultAzureCredential to authenticate to Azure so you can use multiple methods to provide the necessary credentials. More details on DefaultAzureCredential can be found [here](https://learn.microsoft.com/en-us/dotnet/api/azure.identity.defaultazurecredential).
@@ -216,6 +218,16 @@ For an extensive list of environment variables supported by DefaultAzureCredenti
 | dkim_private_key_path | String | Path to PEM key file (optional) | `/etc/smtp-relay/dkim/example.key` |
 | dkim_canonicalization | String | Canonicalization value | `relaxed/relaxed` |
 | dkim_headers | String | Comma-separated header list | `from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding` |
+
+### Optional Domain Settings Columns (PartitionKey = `domain`)
+
+| Column | Type | Description | Example |
+|--------|------|-------------|---------|
+| PartitionKey | String | Domain settings partition key (set by `DOMAIN_SETTINGS_TABLES_PARTITION_KEY`) | `domain` |
+| RowKey | String | Sender domain | `example.com` |
+| from_remap | Boolean/String | Enable From remapping for this domain | `true` |
+| from_remap_addresses | String | Comma-separated list of sender addresses to remap | `accounting@example.com,ops@example.com` |
+| failure_notification | String | Email address that receives failure notifications | `mail-ops@example.com` |
 
 ## Usage
 

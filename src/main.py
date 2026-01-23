@@ -7,8 +7,15 @@ import re
 import uuid
 from dataclasses import dataclass
 from email import policy
+from email.message import EmailMessage
 from email.parser import BytesParser
-from email.utils import parseaddr, parsedate_to_datetime, getaddresses
+from email.utils import (
+    formatdate,
+    getaddresses,
+    make_msgid,
+    parseaddr,
+    parsedate_to_datetime,
+)
 
 import dkim
 
@@ -89,6 +96,26 @@ AZURE_TABLES_URL = load_env(
 AZURE_TABLES_PARTITION_KEY = load_env(
     name='AZURE_TABLES_PARTITION_KEY',
     default='user'
+)
+FROM_REMAP_DOMAINS = load_env(
+    name='FROM_REMAP_DOMAINS',
+    default='',
+    sanitize=lambda x: x.strip() if x else x,
+    convert=lambda value: {
+        item.strip().lower() for item in value.split(",") if item.strip()
+    } if value else set()
+)
+FROM_REMAP_ADDRESSES = load_env(
+    name='FROM_REMAP_ADDRESSES',
+    default='',
+    sanitize=lambda x: x.strip() if x else x,
+    convert=lambda value: {
+        item.strip().lower() for item in value.split(",") if item.strip()
+    } if value else set()
+)
+DOMAIN_SETTINGS_TABLES_PARTITION_KEY = load_env(
+    name='DOMAIN_SETTINGS_TABLES_PARTITION_KEY',
+    default='domain'
 )
 DKIM_SELECTOR = load_env(
     name='DKIM_SELECTOR',
@@ -177,6 +204,13 @@ class DkimConfig:
     source: str
 
 
+@dataclass(frozen=True)
+class DomainSettings:
+    from_remap: bool
+    remap_addresses: set[str]
+    failure_notification: str | None
+
+
 DKIM_DEFAULT_CONFIG: DkimConfig | None = None
 
 
@@ -190,6 +224,19 @@ def parse_email_address(value: str | None) -> str | None:
     if not address or address == '<>' or '@' not in address:
         return None
     return address
+
+
+def normalize_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "yes", "y"}:
+        return True
+    if normalized in {"false", "0", "no", "n"}:
+        return False
+    return None
 
 
 def is_valid_smtp_mailbox(address: str, *, allow_null: bool = False) -> bool:
@@ -256,6 +303,24 @@ def lookup_failback_address(domain: str | None) -> str | None:
     if not domain:
         return None
     return os.getenv(failback_env_var_name(domain))
+
+
+def failure_notification_env_var_name(domain: str) -> str:
+    return f"{domain.replace('.', '_').upper()}_FAILURE_NOTIFICATION"
+
+
+def lookup_failure_notification_address(
+    domain: str | None,
+    domain_settings: DomainSettings | None
+) -> str | None:
+    if not domain:
+        return None
+    env_value = os.getenv(failure_notification_env_var_name(domain))
+    if env_value:
+        return parse_email_address(env_value)
+    if domain_settings and domain_settings.failure_notification:
+        return domain_settings.failure_notification
+    return None
 
 
 def decode_uuid_or_base64url(input_str: str) -> str:
@@ -327,6 +392,36 @@ def update_raw_headers(raw_message: bytes, updates: dict[str, str | None]) -> by
     return rebuilt_headers
 
 
+def build_reply_to_value(existing_reply_to: str | None, original_from: str) -> str:
+    if not existing_reply_to:
+        return original_from
+    existing_addresses = {
+        addr.lower() for _, addr in getaddresses([existing_reply_to]) if addr
+    }
+    original_addresses = [addr for _, addr in getaddresses([original_from]) if addr]
+    if not original_addresses:
+        return existing_reply_to
+    if any(addr.lower() not in existing_addresses for addr in original_addresses):
+        return f"{existing_reply_to}, {original_from}"
+    return existing_reply_to
+
+
+def is_remap_enabled(
+    domain: str,
+    domain_settings: DomainSettings | None,
+    from_address: str | None
+) -> bool:
+    if from_address and from_address.lower() in FROM_REMAP_ADDRESSES:
+        return True
+    if domain in FROM_REMAP_DOMAINS:
+        return True
+    if domain_settings and domain_settings.from_remap:
+        return True
+    if domain_settings and from_address and from_address.lower() in domain_settings.remap_addresses:
+        return True
+    return False
+
+
 def parse_dkim_canonicalization(value: str) -> tuple[bytes, bytes]:
     parts = value.split("/", maxsplit=1)
     if len(parts) != 2 or not parts[0] or not parts[1]:
@@ -339,6 +434,42 @@ def normalize_dkim_private_key(value: str) -> str:
     if "BEGIN" not in normalized or "PRIVATE KEY" not in normalized:
         raise ValueError("DKIM private key must be PEM-encoded")
     return normalized
+
+
+def lookup_domain_settings(domain: str) -> DomainSettings | None:
+    if not AZURE_TABLES_URL:
+        return None
+
+    try:
+        credential = DefaultAzureCredential()
+        with TableClient.from_table_url(table_url=AZURE_TABLES_URL, credential=credential) as client: # pyright: ignore[reportArgumentType]
+            entities = client.query_entities(
+                query_filter=f"PartitionKey eq '{DOMAIN_SETTINGS_TABLES_PARTITION_KEY}' and RowKey eq '{domain}'"
+            )
+            entity = None
+            for item in entities:
+                entity = item
+                break
+    except Exception as exc:
+        logging.error("Failed to query domain settings from Azure Table: %s", exc)
+        return None
+
+    if not entity:
+        return None
+
+    from_remap = normalize_bool(entity.get("from_remap")) or False
+    remap_addresses_value = entity.get("from_remap_addresses")
+    remap_addresses = {
+        item.strip().lower()
+        for item in str(remap_addresses_value).split(",")
+        if remap_addresses_value and item.strip()
+    }
+    failure_notification = parse_email_address(entity.get("failure_notification"))
+    return DomainSettings(
+        from_remap=from_remap,
+        remap_addresses=remap_addresses,
+        failure_notification=failure_notification
+    )
 
 
 def read_dkim_private_key_from_path(path: str) -> str:
@@ -618,7 +749,7 @@ def get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
 GRAPH_MIME_CONTENT_TYPE = "text/plain"
 
 
-def send_email(access_token: str, body: bytes, from_email: str) -> bool:
+def send_email(access_token: str, body: bytes, from_email: str) -> tuple[bool, str | None]:
     url = f"https://graph.microsoft.com/v1.0/users/{from_email}/sendMail"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -632,14 +763,71 @@ def send_email(access_token: str, body: bytes, from_email: str) -> bool:
         response = requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
         if response.status_code == 202:
             logging.info("Email sent successfully!")
-            return True
-        else:
-            logging.error(f"Failed to send email: Status code {response.status_code}")
-            logging.error(f"Response body: {response.text}")
-            return False
+            return True, None
+        error_detail = f"Status code {response.status_code}; response body: {response.text}"
+        logging.error(f"Failed to send email: {error_detail}")
+        return False, error_detail
     except Exception as e:
         logging.exception(f"Exception while sending email: {str(e)}")
-        return False
+        return False, str(e)
+
+
+def send_failure_notification(
+    access_token: str,
+    from_email: str,
+    notification_address: str,
+    parsed_message,
+    envelope,
+    error_detail: str | None
+) -> None:
+    subject_value = parsed_message.get("Subject")
+    subject = "SMTP relay failure"
+    if subject_value:
+        subject = f"{subject}: {subject_value}"
+
+    body_lines = [
+        "SMTP OAuth Relay failed to send a message.",
+        f"Error: {error_detail or 'Unknown error'}",
+    ]
+
+    from_header = parsed_message.get("From")
+    to_header = parsed_message.get("To")
+    message_id = parsed_message.get("Message-ID")
+    envelope_from = envelope.mail_from
+    recipients = ", ".join(envelope.rcpt_tos or [])
+
+    if from_header:
+        body_lines.append(f"Original From: {from_header}")
+    if envelope_from:
+        body_lines.append(f"Envelope From: {envelope_from}")
+    if to_header:
+        body_lines.append(f"To: {to_header}")
+    if recipients:
+        body_lines.append(f"Recipients: {recipients}")
+    if subject_value:
+        body_lines.append(f"Subject: {subject_value}")
+    if message_id:
+        body_lines.append(f"Message-ID: {message_id}")
+
+    message = EmailMessage()
+    message["From"] = from_email
+    message["To"] = notification_address
+    message["Subject"] = subject
+    message["Date"] = formatdate(localtime=True)
+    message["Message-ID"] = make_msgid(domain=from_email.split("@")[-1] if "@" in from_email else None)
+    message.set_content("\n".join(body_lines))
+
+    success, notification_error = send_email(
+        access_token=access_token,
+        body=message.as_bytes(policy=policy.SMTP),
+        from_email=from_email
+    )
+    if not success:
+        logging.error(
+            "Failed to send failure notification to %s: %s",
+            notification_address,
+            notification_error or "Unknown error"
+        )
 
 
 
@@ -716,7 +904,8 @@ class Handler:
             x_sender_address = parse_email_address(x_sender_raw)
 
             return_path_address = parse_email_address(parsed_message.get('Return-Path'))
-            from_header_address = parse_email_address(parsed_message.get('From'))
+            from_header_raw = parsed_message.get('From')
+            from_header_address = parse_email_address(from_header_raw)
             envelope_from_address = parse_email_address(envelope.mail_from)
             header_updates: dict[str, str | None] = {}
 
@@ -728,14 +917,16 @@ class Handler:
 
             from_email = x_sender_address or return_path_address or from_header_address or envelope_from_address
 
+            domain_hint = extract_domain_hint(
+                x_sender_raw,
+                parsed_message.get('Return-Path'),
+                from_header_raw,
+                envelope.mail_from,
+                *(envelope.rcpt_tos or [])
+            )
+            domain_settings = lookup_domain_settings(domain_hint) if domain_hint else None
+
             if not from_email:
-                domain_hint = extract_domain_hint(
-                    x_sender_raw,
-                    parsed_message.get('Return-Path'),
-                    parsed_message.get('From'),
-                    envelope.mail_from,
-                    *(envelope.rcpt_tos or [])
-                )
                 failback_address = lookup_failback_address(domain_hint)
                 if failback_address:
                     logging.warning(
@@ -749,6 +940,30 @@ class Handler:
                 else:
                     logging.error("Unable to determine sender address and no failback configured.")
                     return "554 Transaction failed"
+
+            if domain_hint and from_header_raw and is_remap_enabled(
+                domain_hint,
+                domain_settings,
+                from_header_address
+            ):
+                failback_address = lookup_failback_address(domain_hint)
+                if failback_address:
+                    header_updates['From'] = failback_address
+                    header_updates['Reply-To'] = build_reply_to_value(
+                        parsed_message.get('Reply-To'),
+                        from_header_raw
+                    )
+                    from_email = failback_address
+                    logging.info(
+                        "Remapped From header for domain %s using failback address %s",
+                        domain_hint,
+                        failback_address
+                    )
+                else:
+                    logging.warning(
+                        "From remapping requested for domain %s but no failback address is configured",
+                        domain_hint
+                    )
 
             if session.lookup_from_email:
                 # some clients won't let you set a from address independent of the auth user. Issue: #36
@@ -781,12 +996,28 @@ class Handler:
                 return "554 5.7.0 DKIM configuration missing"
 
             # Send email using Microsoft Graph API
-            success = send_email(session.access_token, raw_message, from_email)
+            success, error_detail = send_email(session.access_token, raw_message, from_email)
 
             if success:
                 return "250 OK"
-            else:
-                return "554 Transaction failed"
+            failure_notification = lookup_failure_notification_address(domain_hint, domain_settings)
+            if failure_notification:
+                notification_sender = lookup_failback_address(domain_hint) or from_email
+                if notification_sender:
+                    send_failure_notification(
+                        access_token=session.access_token,
+                        from_email=notification_sender,
+                        notification_address=failure_notification,
+                        parsed_message=parsed_message,
+                        envelope=envelope,
+                        error_detail=error_detail
+                    )
+                else:
+                    logging.warning(
+                        "Failure notification configured for domain %s but no sender address is available",
+                        domain_hint
+                    )
+            return "554 Transaction failed"
                 
         except Exception as e:
             logging.exception(f"Error handling DATA command: {str(e)}")
