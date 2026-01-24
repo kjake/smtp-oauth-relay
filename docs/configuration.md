@@ -260,6 +260,38 @@ FROM_REMAP_DOMAINS=example.com,legacy.internal
 FROM_REMAP_ADDRESSES=accounting@example.com,ops@example.com
 ```
 
+### Recipient Remapping Configuration
+
+#### `<DOMAIN>_TO_FAILBACK`
+- **Type**: String (email address)
+- **Default**: None (optional)
+- **Description**: Provides a failback recipient address when recipient remapping is enabled. The variable name is derived from the recipient domain by replacing `.` with `_` and uppercasing. For example, for `example.com`, set `EXAMPLE_COM_TO_FAILBACK`. Use this to reroute messages like `postmaster@domain.local` to a real mailbox.
+
+**Example**:
+```bash
+EXAMPLE_COM_TO_FAILBACK=postmaster@example.com
+```
+
+#### TO_REMAP_DOMAINS
+- **Type**: Comma-separated list of domains
+- **Default**: None (optional)
+- **Description**: Enables recipient address remapping for the listed domains. When enabled, the relay replaces any matching `To`, `Cc`, or `Bcc` recipients with the corresponding `<DOMAIN>_TO_FAILBACK` value.
+
+**Example**:
+```bash
+TO_REMAP_DOMAINS=example.com,domain.local
+```
+
+#### TO_REMAP_ADDRESSES
+- **Type**: Comma-separated list of email addresses
+- **Default**: None (optional)
+- **Description**: Enables recipient address remapping for specific mailbox addresses. Use this when only certain recipients (such as `postmaster@domain.local`) should be rerouted.
+
+**Example**:
+```bash
+TO_REMAP_ADDRESSES=postmaster@domain.local
+```
+
 #### `<DOMAIN>_FAILURE_NOTIFICATION`
 - **Type**: String (email address)
 - **Default**: None (optional)
