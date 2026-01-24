@@ -1036,9 +1036,12 @@ class Handler:
             recipient_header_updates = remap_recipient_headers(parsed_message)
             if recipient_header_updates:
                 header_updates.update(recipient_header_updates)
-                if envelope.rcpt_tos:
-                    envelope.rcpt_tos = remap_recipient_list(envelope.rcpt_tos)
                 logging.info("Remapped recipient headers based on TO remap settings.")
+            if envelope.rcpt_tos:
+                remapped_recipients = remap_recipient_list(envelope.rcpt_tos)
+                if remapped_recipients != envelope.rcpt_tos:
+                    envelope.rcpt_tos = remapped_recipients
+                    logging.info("Remapped SMTP recipients based on TO remap settings.")
 
             if not from_email:
                 failback_address = lookup_failback_address(domain_hint)
