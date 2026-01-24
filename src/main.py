@@ -11,6 +11,7 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import (
     formatdate,
+    formataddr,
     getaddresses,
     make_msgid,
     parseaddr,
@@ -107,6 +108,22 @@ FROM_REMAP_DOMAINS = load_env(
 )
 FROM_REMAP_ADDRESSES = load_env(
     name='FROM_REMAP_ADDRESSES',
+    default='',
+    sanitize=lambda x: x.strip() if x else x,
+    convert=lambda value: {
+        item.strip().lower() for item in value.split(",") if item.strip()
+    } if value else set()
+)
+TO_REMAP_DOMAINS = load_env(
+    name='TO_REMAP_DOMAINS',
+    default='',
+    sanitize=lambda x: x.strip() if x else x,
+    convert=lambda value: {
+        item.strip().lower() for item in value.split(",") if item.strip()
+    } if value else set()
+)
+TO_REMAP_ADDRESSES = load_env(
+    name='TO_REMAP_ADDRESSES',
     default='',
     sanitize=lambda x: x.strip() if x else x,
     convert=lambda value: {
@@ -323,6 +340,19 @@ def lookup_failure_notification_address(
     return None
 
 
+def to_failback_env_var_name(domain: str) -> str:
+    return f"{domain.replace('.', '_').upper()}_TO_FAILBACK"
+
+
+def lookup_to_failback_address(domain: str | None) -> str | None:
+    if not domain:
+        return None
+    env_value = os.getenv(to_failback_env_var_name(domain))
+    if env_value:
+        return parse_email_address(env_value)
+    return None
+
+
 def decode_uuid_or_base64url(input_str: str) -> str:
     """
     Checks if input is a UUID string, otherwise attempts to decode as base64url and convert to UUID string.
@@ -420,6 +450,83 @@ def is_remap_enabled(
     if domain_settings and from_address and from_address.lower() in domain_settings.remap_addresses:
         return True
     return False
+
+
+def is_recipient_remap_enabled(address: str) -> bool:
+    if "@" not in address:
+        return False
+    normalized = address.lower()
+    if normalized in TO_REMAP_ADDRESSES:
+        return True
+    domain = normalized.split("@", 1)[-1]
+    if domain in TO_REMAP_DOMAINS:
+        return True
+    return False
+
+
+def remap_recipient_address(address: str) -> str | None:
+    if "@" not in address:
+        return None
+    if not is_recipient_remap_enabled(address):
+        return None
+    domain = address.split("@", 1)[-1].lower()
+    failback = lookup_to_failback_address(domain)
+    if not failback:
+        logging.warning(
+            "Recipient remapping requested for %s but no TO failback address is configured for %s",
+            address,
+            domain
+        )
+        return None
+    return failback
+
+
+def remap_recipient_headers(parsed_message: EmailMessage) -> dict[str, str]:
+    header_updates: dict[str, str] = {}
+    for header_name in ("To", "Cc", "Bcc"):
+        header_value = parsed_message.get(header_name)
+        if not header_value:
+            continue
+        addresses = getaddresses([header_value])
+        if not addresses:
+            continue
+        updated_addresses: list[str] = []
+        seen: set[str] = set()
+        header_changed = False
+        for display_name, address in addresses:
+            if not address:
+                continue
+            replacement = remap_recipient_address(address)
+            if replacement:
+                address = replacement
+                header_changed = True
+            address_key = address.lower()
+            if address_key in seen:
+                header_changed = True
+                continue
+            seen.add(address_key)
+            if display_name:
+                updated_addresses.append(formataddr((display_name, address)))
+            else:
+                updated_addresses.append(address)
+        if header_changed:
+            header_updates[header_name] = ", ".join(updated_addresses)
+    return header_updates
+
+
+def remap_recipient_list(addresses: list[str]) -> list[str]:
+    updated: list[str] = []
+    seen: set[str] = set()
+    for address in addresses:
+        replacement = remap_recipient_address(address)
+        if replacement:
+            address = replacement
+        address_key = address.lower()
+        if address_key in seen:
+            continue
+        seen.add(address_key)
+        updated.append(address)
+    return updated
 
 
 def parse_dkim_canonicalization(value: str) -> tuple[bytes, bytes]:
@@ -925,6 +1032,16 @@ class Handler:
                 *(envelope.rcpt_tos or [])
             )
             domain_settings = lookup_domain_settings(domain_hint) if domain_hint else None
+
+            recipient_header_updates = remap_recipient_headers(parsed_message)
+            if recipient_header_updates:
+                header_updates.update(recipient_header_updates)
+                logging.info("Remapped recipient headers based on TO remap settings.")
+            if envelope.rcpt_tos:
+                remapped_recipients = remap_recipient_list(envelope.rcpt_tos)
+                if remapped_recipients != envelope.rcpt_tos:
+                    envelope.rcpt_tos = remapped_recipients
+                    logging.info("Remapped SMTP recipients based on TO remap settings.")
 
             if not from_email:
                 failback_address = lookup_failback_address(domain_hint)

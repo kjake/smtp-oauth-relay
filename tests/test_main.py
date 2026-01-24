@@ -45,6 +45,16 @@ def test_lookup_failure_notification_address(monkeypatch: pytest.MonkeyPatch) ->
     )
 
 
+def test_to_failback_env_var_name() -> None:
+    assert main.to_failback_env_var_name("example.com") == "EXAMPLE_COM_TO_FAILBACK"
+
+
+def test_lookup_to_failback_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXAMPLE_COM_TO_FAILBACK", "postmaster@example.com")
+    assert main.lookup_to_failback_address("example.com") == "postmaster@example.com"
+    assert main.lookup_to_failback_address(None) is None
+
+
 def test_decode_uuid_or_base64url_roundtrip() -> None:
     value = uuid.uuid4()
     encoded = base64.urlsafe_b64encode(value.bytes).decode().rstrip("=")
@@ -101,6 +111,14 @@ def test_is_remap_enabled_checks_env_and_table(monkeypatch: pytest.MonkeyPatch) 
     )
     assert main.is_remap_enabled("other.com", settings, None)
     assert main.is_remap_enabled("other.com", settings, "ops@example.com")
+
+
+def test_is_recipient_remap_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "TO_REMAP_DOMAINS", {"example.com"})
+    monkeypatch.setattr(main, "TO_REMAP_ADDRESSES", {"postmaster@example.com"})
+    assert main.is_recipient_remap_enabled("postmaster@example.com")
+    assert main.is_recipient_remap_enabled("user@example.com")
+    assert not main.is_recipient_remap_enabled("user@other.com")
 
 
 def test_parse_dkim_canonicalization() -> None:
