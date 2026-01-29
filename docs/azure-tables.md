@@ -152,6 +152,8 @@ AZURE_TABLES_URL=https://smtprelay1234.table.core.windows.net/users
 AZURE_TABLES_PARTITION_KEY=user
 ```
 
+Per-domain From remapping and failure notifications also use the same table. Configure `DOMAIN_SETTINGS_TABLES_PARTITION_KEY` (default `domain`) and add one row per sender domain. You can optionally add address-level remapping by providing a comma-separated list of addresses.
+
 ### Grant Permissions
 
 The relay needs permissions to read from the table. Internally, it uses DefaultAzureCredential to authenticate to Azure so you can use multiple methods to provide the necessary credentials. More details on DefaultAzureCredential can be found [here](https://learn.microsoft.com/en-us/dotnet/api/azure.identity.defaultazurecredential).
@@ -200,6 +202,16 @@ For an extensive list of environment variables supported by DefaultAzureCredenti
 | client_id | String | Application client UUID | `abcdefab-1234-5678-abcd-abcdefabcdef` |
 | from_email | String | Override sender email address (optional) | `app1@example.com` |
 | description | String | Human-readable description (not used by relay) | `Application 1 credentials` |
+
+### Optional Domain Settings Columns (PartitionKey = `domain`)
+
+| Column | Type | Description | Example |
+|--------|------|-------------|---------|
+| PartitionKey | String | Domain settings partition key (set by `DOMAIN_SETTINGS_TABLES_PARTITION_KEY`) | `domain` |
+| RowKey | String | Sender domain | `example.com` |
+| from_remap | Boolean/String | Enable From remapping for this domain | `true` |
+| from_remap_addresses | String | Comma-separated list of sender addresses to remap | `accounting@example.com,ops@example.com` |
+| failure_notification | String | Email address that receives failure notifications | `mail-ops@example.com` |
 
 ## Usage
 

@@ -153,6 +153,40 @@ printer1@lookup
 - Azure Table Storage (for credential lookup)
 - Managed Identity (for Azure services)
 
+## Development
+
+### Tooling
+
+Create a virtual environment, install dependencies, and run checks:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+On Windows, activate with:
+
+```bash
+.venv\\Scripts\\activate
+```
+
+```bash
+ruff check .
+pytest -q
+```
+
+### Pre-commit hooks
+
+Install hooks and run them on demand:
+
+```bash
+pre-commit install
+pre-commit run --all-files
+```
+
+Note: the hooks are configured to use the local `.venv`, so create it first.
+
 ## Security
 
 This relay implements security best practices:

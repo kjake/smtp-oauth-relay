@@ -208,6 +208,90 @@ See [Azure Tables Integration](azure-tables.md) for detailed setup.
 AZURE_TABLES_PARTITION_KEY=smtp-users
 ```
 
+#### DOMAIN_SETTINGS_TABLES_PARTITION_KEY
+- **Type**: String
+- **Default**: `domain`
+- **Description**: The partition key to use when querying Azure Table entries for per-domain settings such as From remapping and failure notifications.
+
+**Example**:
+```bash
+DOMAIN_SETTINGS_TABLES_PARTITION_KEY=domain-settings
+```
+
+### Sender Failback Configuration
+
+#### `<DOMAIN>_FROM_FAILBACK`
+- **Type**: String (email address)
+- **Default**: None (optional)
+- **Description**: Provides a failback sender address when the incoming message is malformed or missing a valid sender. The variable name is derived from the sender domain by replacing `.` with `_` and uppercasing. For example, for `example.com`, set `EXAMPLE_COM_FROM_FAILBACK`.
+
+**Example**:
+```bash
+EXAMPLE_COM_FROM_FAILBACK=noreply@example.com
+```
+
+#### FROM_REMAP_DOMAINS
+- **Type**: Comma-separated list of domains
+- **Default**: None (optional)
+- **Description**: Enables From address remapping for the listed domains. When enabled, the relay replaces the message From header with the corresponding `<DOMAIN>_FROM_FAILBACK` value, and inserts the original From as a Reply-To header so replies still reach the original sender. This works alongside Azure Table settings (see `DOMAIN_SETTINGS_TABLES_PARTITION_KEY`) for per-domain control.
+
+**Example**:
+```bash
+FROM_REMAP_DOMAINS=example.com,legacy.internal
+```
+
+#### FROM_REMAP_ADDRESSES
+- **Type**: Comma-separated list of email addresses
+- **Default**: None (optional)
+- **Description**: Enables From address remapping for specific mailbox addresses. Use this when only certain senders (such as distribution groups) need remapping while other addresses in the same domain remain unchanged.
+
+**Example**:
+```bash
+FROM_REMAP_ADDRESSES=accounting@example.com,ops@example.com
+```
+
+### Recipient Remapping Configuration
+
+#### `<DOMAIN>_TO_FAILBACK`
+- **Type**: String (email address)
+- **Default**: None (optional)
+- **Description**: Provides a failback recipient address when recipient remapping is enabled. The variable name is derived from the recipient domain by replacing `.` with `_` and uppercasing. For example, for `example.com`, set `EXAMPLE_COM_TO_FAILBACK`. Use this to reroute messages like `postmaster@domain.local` to a real mailbox.
+
+**Example**:
+```bash
+EXAMPLE_COM_TO_FAILBACK=postmaster@example.com
+```
+
+#### TO_REMAP_DOMAINS
+- **Type**: Comma-separated list of domains
+- **Default**: None (optional)
+- **Description**: Enables recipient address remapping for the listed domains. When enabled, the relay replaces any matching `To`, `Cc`, or `Bcc` recipients with the corresponding `<DOMAIN>_TO_FAILBACK` value.
+
+**Example**:
+```bash
+TO_REMAP_DOMAINS=example.com,domain.local
+```
+
+#### TO_REMAP_ADDRESSES
+- **Type**: Comma-separated list of email addresses
+- **Default**: None (optional)
+- **Description**: Enables recipient address remapping for specific mailbox addresses. Use this when only certain recipients (such as `postmaster@domain.local`) should be rerouted.
+
+**Example**:
+```bash
+TO_REMAP_ADDRESSES=postmaster@domain.local
+```
+
+#### `<DOMAIN>_FAILURE_NOTIFICATION`
+- **Type**: String (email address)
+- **Default**: None (optional)
+- **Description**: Address that receives failure notifications when sending a message fails for the given domain. The relay sends a basic summary including From/To/Subject and the error. The variable name is derived from the sender domain by replacing `.` with `_` and uppercasing.
+
+**Example**:
+```bash
+EXAMPLE_COM_FAILURE_NOTIFICATION=mail-ops@example.com
+```
+
 ## Configuration Examples
 
 ### Production Configuration (File-based TLS)
