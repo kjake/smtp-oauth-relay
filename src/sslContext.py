@@ -84,21 +84,24 @@ def from_file(cert_filepath, key_filepath):
     Load certificate and key from file paths.
     Returns ssl.SSLContext object.
     """
-    import os
+    from pathlib import Path
 
-    # check if cert and key files exist
-    if not os.path.exists(path=cert_filepath) or not os.path.exists(path=key_filepath):
-        logging.error("Certificate or key not found")
-        raise FileNotFoundError("Certificate or key not found")
+    try:
+        cert_path = Path(cert_filepath).expanduser().resolve(strict=True)
+        key_path = Path(key_filepath).expanduser().resolve(strict=True)
+    except FileNotFoundError as exc:
+        logging.error(f"Certificate or key not found: {str(exc)}")
+        raise
+
+    if not cert_path.is_file() or not key_path.is_file():
+        logging.error("Certificate or key path is not a file")
+        raise FileNotFoundError("Certificate or key path is not a file")
 
 
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     try:
-        context.load_cert_chain(certfile=cert_filepath, keyfile=key_filepath)
+        context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
     except ssl.SSLError as e:
         logging.error(f"Failed to load Certificate or key: {str(e)}")
-        raise
-    except FileNotFoundError as e:
-        logging.error(f"Certificate or key not found: {str(e)}")
         raise
     return context

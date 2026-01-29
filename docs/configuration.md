@@ -43,6 +43,16 @@ LOG_LEVEL=INFO
 SERVER_GREETING="My Company SMTP Relay"
 ```
 
+#### HTTP_TIMEOUT_SECONDS
+- **Type**: Float
+- **Default**: `30`
+- **Description**: Timeout in seconds for outbound HTTP calls to the Microsoft identity platform and Microsoft Graph API. Increase this value if your environment has high latency.
+
+**Example**:
+```bash
+HTTP_TIMEOUT_SECONDS=45
+```
+
 ### TLS Configuration
 
 #### TLS_SOURCE
@@ -163,8 +173,8 @@ AZURE_KEY_VAULT_URL=https://my-keyvault.vault.azure.net/
 
 **Requirements**:
 - The application must have a managed identity
-- The identity must have `Get Secret` and `Get Certificate` permissions on the Key Vault
-- Certificate must be imported in PKCS#12 format
+- The identity must have `Get Secret` permissions on the Key Vault (for example, the **Key Vault Secrets User** role)
+- Certificate must be imported so its secret contains a PKCS#12 payload
 
 #### AZURE_KEY_VAULT_CERT_NAME
 - **Type**: String
@@ -339,6 +349,11 @@ AZURE_KEY_VAULT_URL=https://my-keyvault.vault.azure.net/
 AZURE_KEY_VAULT_CERT_NAME=smtp-cert
 AZURE_TABLES_URL=https://mystorageaccount.table.core.windows.net/users
 AZURE_TABLES_PARTITION_KEY=smtp-users
+DKIM_SELECTOR=relay
+DKIM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+DKIM_CANONICALIZATION=relaxed/relaxed
+DKIM_HEADERS=from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding
+DKIM_ENABLED=true
 USERNAME_DELIMITER=@
 ```
 
