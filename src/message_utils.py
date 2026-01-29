@@ -1,32 +1,51 @@
+import logging
 import re
 from email import policy
+from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
+
+from constants import (
+    SMTP_BARE_LF,
+    SMTP_INVALID_DATE,
+    SMTP_INVALID_FROM,
+    SMTP_MISSING_DATE,
+    SMTP_MISSING_FROM,
+)
 
 BARE_LF_PATTERN = re.compile(br"(?<!\r)\n")
 
 
-def validate_rfc5322_message(raw_message: bytes) -> str | None:
+def validate_rfc5322_message(
+    raw_message: bytes,
+    *,
+    parsed_message: EmailMessage | None = None,
+    allow_invalid_from: bool = False
+) -> str | None:
     if BARE_LF_PATTERN.search(raw_message):
-        return "550 5.6.0 Message contains bare LF line endings"
+        return SMTP_BARE_LF
 
-    parsed_message = BytesParser(policy=policy.SMTP).parsebytes(raw_message)
+    if parsed_message is None:
+        parsed_message = BytesParser(policy=policy.SMTP).parsebytes(raw_message)
     from_header = parsed_message.get("From")
     date_header = parsed_message.get("Date")
-    if not from_header:
-        return "554 5.6.0 Missing required header: From"
+    if not from_header and not allow_invalid_from:
+        return SMTP_MISSING_FROM
     if not date_header:
-        return "554 5.6.0 Missing required header: Date"
+        return SMTP_MISSING_DATE
 
-    addresses = [addr for _, addr in getaddresses([from_header]) if addr]
-    if not addresses or any("@" not in addr for addr in addresses):
-        return "554 5.6.0 Invalid From header"
+    if from_header:
+        addresses = [addr for _, addr in getaddresses([from_header]) if addr]
+        if (not allow_invalid_from) and (
+            not addresses or any("@" not in addr for addr in addresses)
+        ):
+            return SMTP_INVALID_FROM
 
     try:
         if parsedate_to_datetime(date_header) is None:
-            return "554 5.6.0 Invalid Date header"
+            return SMTP_INVALID_DATE
     except (TypeError, ValueError):
-        return "554 5.6.0 Invalid Date header"
+        return SMTP_INVALID_DATE
     return None
 
 
@@ -81,6 +100,42 @@ def update_raw_headers(raw_message: bytes, updates: dict[str, str | None]) -> by
     return rebuilt_headers
 
 
+def apply_header_updates(
+    raw_message: bytes,
+    parsed_message: EmailMessage,
+    updates: dict[str, str | None],
+    reasons: list[str],
+) -> bytes:
+    # Centralize update logging + rewrite so callers stay focused on flow.
+    if not updates:
+        return raw_message
+
+    if logging.getLogger().isEnabledFor(logging.DEBUG):
+        for header_name in sorted(updates.keys()):
+            old_value = parsed_message.get(header_name)
+            new_value = updates[header_name]
+            if new_value is None:
+                logging.debug(
+                    "Header update: %s removed (was %r)",
+                    header_name,
+                    old_value
+                )
+            else:
+                logging.debug(
+                    "Header update: %s %r -> %r",
+                    header_name,
+                    old_value,
+                    new_value
+                )
+
+    logging.info(
+        "Message headers updated: %s; reasons=%s",
+        ", ".join(sorted(updates.keys())),
+        ", ".join(reasons) if reasons else "unspecified"
+    )
+    return update_raw_headers(raw_message, updates)
+
+
 def build_reply_to_value(existing_reply_to: str | None, original_from: str) -> str:
     if not existing_reply_to:
         return original_from
@@ -93,3 +148,69 @@ def build_reply_to_value(existing_reply_to: str | None, original_from: str) -> s
     if any(addr.lower() not in existing_addresses for addr in original_addresses):
         return f"{existing_reply_to}, {original_from}"
     return existing_reply_to
+
+
+def log_invalid_x_sender(
+    original_value: str,
+    replacement_sender: str | None,
+    return_path: str | None,
+    from_header: str | None,
+) -> None:
+    if replacement_sender:
+        logging.debug(
+            "Normalized invalid X-Sender %r -> %r",
+            original_value,
+            replacement_sender,
+        )
+    else:
+        logging.debug(
+            "Invalid X-Sender %r with no replacement (Return-Path=%r, From=%r)",
+            original_value,
+            return_path,
+            from_header,
+        )
+
+
+def log_recipient_header_remap() -> None:
+    logging.info("Remapped recipient headers based on TO remap settings.")
+
+
+def log_envelope_recipient_remap() -> None:
+    logging.info("Remapped SMTP recipients based on TO remap settings.")
+
+
+def log_failback_sender_used(domain_hint: str | None) -> None:
+    logging.warning(
+        "Using failback sender address for malformed message (domain hint: %s)",
+        domain_hint,
+    )
+
+
+def log_failback_sender_missing() -> None:
+    logging.error("Unable to determine sender address and no failback configured.")
+
+
+def log_from_remap_applied(domain_hint: str, failback_address: str) -> None:
+    logging.info(
+        "Remapped From header for domain %s using failback address %s",
+        domain_hint,
+        failback_address,
+    )
+
+
+def log_from_remap_missing(domain_hint: str) -> None:
+    logging.warning(
+        "From remapping requested for domain %s but no failback address is configured",
+        domain_hint,
+    )
+
+
+def log_failure_notification_missing_sender(domain_hint: str | None) -> None:
+    logging.warning(
+        "Failure notification configured for domain %s but no sender address is available",
+        domain_hint,
+    )
+
+
+def log_rfc5322_validation_failed(error_message: str) -> None:
+    logging.error("RFC 5322 validation failed: %s", error_message)

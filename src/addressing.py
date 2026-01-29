@@ -21,6 +21,7 @@ SMTP_DOMAIN_PATTERN = re.compile(rf"^{SMTP_DOMAIN}$")
 
 
 def parse_email_address(value: str | None) -> str | None:
+    # Normalize a possibly formatted header value into a simple addr-spec.
     if not value:
         return None
     candidate = value.strip()
@@ -33,6 +34,7 @@ def parse_email_address(value: str | None) -> str | None:
 
 
 def normalize_bool(value: object) -> bool | None:
+    # Normalize common string/number truthy values from table/env inputs.
     if isinstance(value, bool):
         return value
     if value is None:
@@ -46,6 +48,7 @@ def normalize_bool(value: object) -> bool | None:
 
 
 def is_valid_smtp_mailbox(address: str, *, allow_null: bool = False) -> bool:
+    # RFC 5321-ish validation for MAIL FROM / RCPT TO values.
     if allow_null and address == "<>":
         return True
     if not address or "<" in address or ">" in address:
@@ -69,6 +72,7 @@ def is_valid_smtp_mailbox(address: str, *, allow_null: bool = False) -> bool:
 
 
 def extract_domain_hint(*values: str | None) -> str | None:
+    # Pull a domain hint from any header-like string.
     for value in values:
         if not value:
             continue
@@ -79,16 +83,19 @@ def extract_domain_hint(*values: str | None) -> str | None:
 
 
 def failback_env_var_name(domain: str) -> str:
+    # Env var naming convention for sender failback addresses.
     return f"{domain.replace('.', '_').upper()}_FROM_FAILBACK"
 
 
 def lookup_failback_address(domain: str | None) -> str | None:
+    # Look up failback sender address for a domain.
     if not domain:
         return None
     return os.getenv(failback_env_var_name(domain))
 
 
 def failure_notification_env_var_name(domain: str) -> str:
+    # Env var naming convention for failure notification addresses.
     return f"{domain.replace('.', '_').upper()}_FAILURE_NOTIFICATION"
 
 
@@ -96,6 +103,7 @@ def lookup_failure_notification_address(
     domain: str | None,
     domain_settings: DomainSettings | None
 ) -> str | None:
+    # Env vars override table-provided domain settings.
     if not domain:
         return None
     env_value = os.getenv(failure_notification_env_var_name(domain))
@@ -107,10 +115,12 @@ def lookup_failure_notification_address(
 
 
 def to_failback_env_var_name(domain: str) -> str:
+    # Env var naming convention for recipient failback addresses.
     return f"{domain.replace('.', '_').upper()}_TO_FAILBACK"
 
 
 def lookup_to_failback_address(domain: str | None) -> str | None:
+    # Look up failback recipient address for a domain.
     if not domain:
         return None
     env_value = os.getenv(to_failback_env_var_name(domain))

@@ -34,7 +34,7 @@ def from_keyvault(azure_key_vault_url, azure_key_vault_cert_name):
     try:
         private_key, certificate, _ = pkcs12.load_key_and_certificates(cert_data, None)
     except Exception as e:
-        logging.error(f"Failed to load PKCS#12 data: {str(e)}")
+        logging.error("Failed to load PKCS#12 data: %s", e)
         raise
 
     cert_path = None
@@ -79,6 +79,28 @@ def from_keyvault(azure_key_vault_url, azure_key_vault_cert_name):
                     logging.warning("Failed to remove temporary certificate file: %s", path)
 
 
+def log_loaded_certificate_from_file(cert_path: str) -> None:
+    logging.info("Loaded certificate from file: %s", cert_path)
+
+
+def log_loaded_certificate_from_keyvault(cert_name: str) -> None:
+    logging.info("Loaded certificate from Azure Key Vault: %s", cert_name)
+
+
+def log_invalid_tls_source(tls_source: str) -> None:
+    logging.error("Invalid TLS_SOURCE: %s", tls_source)
+
+
+def log_missing_keyvault_config() -> None:
+    logging.error(
+        "Azure Key Vault URL and Certificate Name must be set when TLS_SOURCE is 'keyvault'"
+    )
+
+
+def log_tls_cipher_suites(cipher_names: str) -> None:
+    logging.info("TLS cipher suites used: %s", cipher_names)
+
+
 def from_file(cert_filepath, key_filepath):
     """
     Load certificate and key from file paths.
@@ -90,7 +112,7 @@ def from_file(cert_filepath, key_filepath):
         cert_path = Path(cert_filepath).expanduser().resolve(strict=True)
         key_path = Path(key_filepath).expanduser().resolve(strict=True)
     except FileNotFoundError as exc:
-        logging.error(f"Certificate or key not found: {str(exc)}")
+        logging.error("Certificate or key not found: %s", exc)
         raise
 
     if not cert_path.is_file() or not key_path.is_file():
@@ -102,6 +124,6 @@ def from_file(cert_filepath, key_filepath):
     try:
         context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
     except ssl.SSLError as e:
-        logging.error(f"Failed to load Certificate or key: {str(e)}")
+        logging.error("Failed to load Certificate or key: %s", e)
         raise
     return context

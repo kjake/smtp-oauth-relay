@@ -4,6 +4,8 @@ from typing import Any
 from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import SMTP, Session, TLSSetupException
 
+from constants import SMTP_TLS_NOT_AVAILABLE
+
 
 class CustomController(Controller):
     def factory(self) -> SMTP:
@@ -31,7 +33,7 @@ class CustomSMTP(SMTP):
         except TLSSetupException:
             if self.tls_context:
                 logging.error("TLS handshake with client failed.")
-            return "454 4.7.0 TLS not available"
+            return SMTP_TLS_NOT_AVAILABLE
 
     
     def _create_session(self) -> Session:

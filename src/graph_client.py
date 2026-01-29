@@ -16,6 +16,7 @@ def send_email(
     body: bytes,
     from_email: str
 ) -> tuple[bool, str | None, int | None]:
+    # Send a raw RFC5322 message through Microsoft Graph sendMail.
     url = f"https://graph.microsoft.com/v1.0/users/{from_email}/sendMail"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -23,18 +24,19 @@ def send_email(
     }
 
     try:
+        # Graph expects base64-encoded MIME content when using text/plain.
         data = base64.b64encode(body)
-        logging.debug(f"Sending email from {from_email}")
+        logging.debug("Sending email from %s", from_email)
 
         response = requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
         if response.status_code == 202:
             logging.info("Email sent successfully!")
             return True, None, response.status_code
         error_detail = f"Status code {response.status_code}; response body: {response.text}"
-        logging.error(f"Failed to send email: {error_detail}")
+        logging.error("Failed to send email: %s", error_detail)
         return False, error_detail, response.status_code
     except Exception as e:
-        logging.exception(f"Exception while sending email: {str(e)}")
+        logging.exception("Exception while sending email: %s", e)
         return False, str(e), None
 
 
@@ -46,6 +48,7 @@ def send_failure_notification(
     envelope,
     error_detail: str | None
 ) -> None:
+    # Emit a minimal failure report back to an operator mailbox.
     subject_value = parsed_message.get("Subject")
     subject = "SMTP relay failure"
     if subject_value:
@@ -75,6 +78,7 @@ def send_failure_notification(
     if message_id:
         body_lines.append(f"Message-ID: {message_id}")
 
+    # Build a plain-text message without relaying the original body.
     message = EmailMessage()
     message["From"] = from_email
     message["To"] = notification_address

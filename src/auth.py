@@ -1,5 +1,4 @@
 import base64
-import logging
 import re
 import uuid
 
@@ -8,11 +7,19 @@ from aiosmtpd.smtp import AuthResult
 from azure.data.tables import TableClient
 from azure.identity import DefaultAzureCredential
 
+import relay_logging
 from config import (
     AZURE_TABLES_PARTITION_KEY,
     AZURE_TABLES_URL,
     HTTP_TIMEOUT_SECONDS,
     USERNAME_DELIMITER,
+)
+from constants import (
+    AUTH_CREDENTIALS_MISSING,
+    AUTH_FAILED,
+    AUTH_INVALID_ENCODING,
+    AUTH_UNEXPECTED_ERROR,
+    AUTH_UNSUPPORTED_MECHANISM,
 )
 
 UUID_PATTERN = re.compile(
@@ -132,10 +139,11 @@ def get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
             raise ValueError("OAuth token response missing access_token")
         return access_token
     except requests.RequestException as e:
-        logging.error(f"OAuth token request failed: {str(e)}")
+        relay_logging.log_oauth_token_request_failed(e)
         if hasattr(e, 'response') and e.response:
-            logging.error(
-                f"Response status: {e.response.status_code}, Response body: {e.response.text}"
+            relay_logging.log_oauth_token_response_details(
+                e.response.status_code,
+                e.response.text
             )
         raise
 
@@ -145,37 +153,37 @@ class Authenticator:
         try:
             # Only support LOGIN and PLAIN mechanisms
             if mechanism not in ('LOGIN', 'PLAIN'):
-                logging.warning(f"Unsupported auth mechanism: {mechanism}")
+                relay_logging.log_unsupported_auth_mechanism(mechanism)
                 return AuthResult(
                     success=False,
                     handled=False,
-                    message="504 5.7.4 Unsupported authentication mechanism"
+                    message=AUTH_UNSUPPORTED_MECHANISM
                 )
 
             # Check if authentication data is present
             if not auth_data or not auth_data.login or not auth_data.password:
-                logging.warning("Missing authentication data")
+                relay_logging.log_missing_auth_data()
                 return AuthResult(
                     success=False,
                     handled=False,
-                    message="535 5.7.8 Authentication credentials missing"
+                    message=AUTH_CREDENTIALS_MISSING
                 )
 
             try:
                 login_str = auth_data.login.decode("utf-8")
             except Exception as e:
-                logging.error(f"Failed to decode login string: {str(e)}")
+                relay_logging.log_auth_login_decode_failed(e)
                 return AuthResult(
                     success=False,
                     handled=False,
-                    message="535 5.7.8 Invalid authentication credentials encoding"
+                    message=AUTH_INVALID_ENCODING
                 )
 
             # Parse tenant_id and client_id from login string using the configured format
             try:
                 tenant_id, client_id, from_email = parse_username(login_str)
             except ValueError as e:
-                logging.error(str(e))
+                relay_logging.log_auth_parse_failed(str(e))
                 return AuthResult(
                     success=False,
                     handled=False,
@@ -189,17 +197,17 @@ class Authenticator:
                 session.access_token = get_access_token(tenant_id, client_id, client_secret)
                 return AuthResult(success=True)
             except Exception as e:
-                logging.error(f"Authentication failed: {str(e)}")
+                relay_logging.log_authentication_failed(e)
                 return AuthResult(
                     success=False,
                     handled=False,
-                    message="535 5.7.8 Authentication failed"
+                    message=AUTH_FAILED
                 )
 
         except Exception as e:
-            logging.exception(f"Unexpected error during authentication: {str(e)}")
+            relay_logging.log_auth_unexpected_error(e)
             return AuthResult(
                 success=False,
                 handled=False,
-                message="554 5.7.0 Unexpected error during authentication"
+                message=AUTH_UNEXPECTED_ERROR
             )

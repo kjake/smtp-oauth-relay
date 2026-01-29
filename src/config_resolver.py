@@ -6,6 +6,7 @@ import domain_settings
 
 @dataclass(frozen=True)
 class DomainContext:
+    # Resolved per-domain configuration with env-first precedence.
     domain: str | None
     settings: domain_settings.DomainSettings | None
     failure_notification: str | None
@@ -13,6 +14,7 @@ class DomainContext:
 
 
 def resolve_domain_context(*values: str | None) -> DomainContext:
+    # Resolve domain settings using env vars first, then Azure Table fallback.
     domain_hint = addressing.extract_domain_hint(*values)
     if not domain_hint:
         return DomainContext(

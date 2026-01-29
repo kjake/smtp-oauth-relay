@@ -16,6 +16,7 @@ def is_remap_enabled(
     domain_settings: DomainSettings | None,
     from_address: str | None
 ) -> bool:
+    # Env overrides win, then table-provided domain settings.
     if from_address and from_address.lower() in FROM_REMAP_ADDRESSES:
         return True
     if domain in FROM_REMAP_DOMAINS:
@@ -30,6 +31,7 @@ def is_remap_enabled(
 
 
 def is_recipient_remap_enabled(address: str) -> bool:
+    # Check remap config for either exact address or domain match.
     if "@" not in address:
         return False
     normalized = address.lower()
@@ -40,6 +42,7 @@ def is_recipient_remap_enabled(address: str) -> bool:
 
 
 def remap_recipient_address(address: str) -> str | None:
+    # Translate a recipient to its configured failback, if enabled.
     if "@" not in address:
         return None
     if not is_recipient_remap_enabled(address):
@@ -57,6 +60,7 @@ def remap_recipient_address(address: str) -> str | None:
 
 
 def remap_recipient_headers(parsed_message) -> dict[str, str]:
+    # Rewrite To/Cc/Bcc headers while deduplicating recipients.
     header_updates: dict[str, str] = {}
     for header_name in ("To", "Cc", "Bcc"):
         header_value = parsed_message.get(header_name)
@@ -90,6 +94,7 @@ def remap_recipient_headers(parsed_message) -> dict[str, str]:
 
 
 def remap_recipient_list(addresses: list[str]) -> list[str]:
+    # Rewrite envelope recipients and remove duplicates.
     updated: list[str] = []
     seen: set[str] = set()
     for address in addresses:

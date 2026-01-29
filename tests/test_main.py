@@ -328,3 +328,25 @@ def test_handle_rcpt_rejects_null_recipient() -> None:
 def test_validate_rfc5322_requires_date() -> None:
     raw_message = b"From: sender@example.com\r\n\r\nBody"
     assert message_utils.validate_rfc5322_message(raw_message).startswith("554")
+
+
+def test_validate_rfc5322_allows_missing_from_with_failback() -> None:
+    raw_message = b"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody"
+    assert (
+        message_utils.validate_rfc5322_message(
+            raw_message,
+            allow_invalid_from=True,
+        )
+        is None
+    )
+
+
+def test_validate_rfc5322_allows_invalid_from_with_failback() -> None:
+    raw_message = b"From: <>\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody"
+    assert (
+        message_utils.validate_rfc5322_message(
+            raw_message,
+            allow_invalid_from=True,
+        )
+        is None
+    )
