@@ -60,6 +60,11 @@ class Handler:
             header_updates: dict[str, str | None] = {}
             header_change_reasons: list[str] = []
 
+            # Ensure replies go back to the original From when clients omit Reply-To.
+            if from_header_raw and not parsed_message.get('Reply-To'):
+                header_updates['Reply-To'] = from_header_raw
+                header_change_reasons.append("inserted Reply-To from From header")
+
             # Normalize invalid X-Sender so downstream routing has a usable sender.
             if x_sender_raw is not None and not x_sender_address:
                 replacement_sender = return_path_address or from_header_address
