@@ -154,6 +154,17 @@ AZURE_TABLES_PARTITION_KEY=user
 
 Per-domain From remapping and failure notifications also use the same table. Configure `DOMAIN_SETTINGS_TABLES_PARTITION_KEY` (default `domain`) and add one row per sender domain. You can optionally add address-level remapping by providing a comma-separated list of addresses.
 
+### Domain Settings Resolution Order
+
+When both environment variables and Azure Table domain settings are present, the relay resolves
+values in this order:
+
+1. Environment variables (for example, `<DOMAIN>_FROM_FAILBACK`, `<DOMAIN>_FAILURE_NOTIFICATION`)
+2. Azure Table domain settings (PartitionKey from `DOMAIN_SETTINGS_TABLES_PARTITION_KEY`)
+
+This lets you keep steady-state settings in Azure Tables while still allowing quick overrides
+via environment variables when needed.
+
 ### Grant Permissions
 
 The relay needs permissions to read from the table. Internally, it uses DefaultAzureCredential to authenticate to Azure so you can use multiple methods to provide the necessary credentials. More details on DefaultAzureCredential can be found [here](https://learn.microsoft.com/en-us/dotnet/api/azure.identity.defaultazurecredential).
@@ -164,12 +175,19 @@ The relay needs permissions to read from the table. Internally, it uses DefaultA
 2. Grant the identity "Storage Table Data Reader" role:
 
 ```bash
-# Get relay's managed identity principal ID
-PRINCIPAL_ID=$(az containerapp show \
+# Get relay's managed identity principal ID (Azure Container Instances)
+PRINCIPAL_ID=$(az container show \
   --name smtp-relay \
   --resource-group smtp-relay-rg \
   --query identity.principalId \
   --output tsv)
+
+# If you're using Azure Container Apps instead:
+# PRINCIPAL_ID=$(az containerapp show \
+#   --name smtp-relay \
+#   --resource-group smtp-relay-rg \
+#   --query identity.principalId \
+#   --output tsv)
 
 # Grant role
 az role assignment create \

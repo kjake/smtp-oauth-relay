@@ -228,6 +228,15 @@ AZURE_TABLES_PARTITION_KEY=smtp-users
 DOMAIN_SETTINGS_TABLES_PARTITION_KEY=domain-settings
 ```
 
+#### Domain settings resolution order
+
+When both environment variables and Azure Table domain settings are present, the relay resolves values in this order:
+
+1. Environment variables (for example, `<DOMAIN>_FROM_FAILBACK`, `<DOMAIN>_FAILURE_NOTIFICATION`)
+2. Azure Table domain settings (partition key from `DOMAIN_SETTINGS_TABLES_PARTITION_KEY`)
+
+This allows per-domain overrides to live in the table while keeping urgent or temporary overrides in environment variables.
+
 ### Sender Failback Configuration
 
 #### `<DOMAIN>_FROM_FAILBACK`
@@ -349,11 +358,6 @@ AZURE_KEY_VAULT_URL=https://my-keyvault.vault.azure.net/
 AZURE_KEY_VAULT_CERT_NAME=smtp-cert
 AZURE_TABLES_URL=https://mystorageaccount.table.core.windows.net/users
 AZURE_TABLES_PARTITION_KEY=smtp-users
-DKIM_SELECTOR=relay
-DKIM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-DKIM_CANONICALIZATION=relaxed/relaxed
-DKIM_HEADERS=from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding
-DKIM_ENABLED=true
 USERNAME_DELIMITER=@
 ```
 

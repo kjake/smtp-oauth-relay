@@ -7,7 +7,7 @@ from aiosmtpd.smtp import MISSING
 
 import addressing
 import config
-import domain_settings
+import config_resolver
 import graph_client
 import message_utils
 import remap
@@ -52,12 +52,14 @@ class Handler:
             from_header_address = addressing.parse_email_address(from_header_raw)
             envelope_from_address = addressing.parse_email_address(envelope.mail_from)
             header_updates: dict[str, str | None] = {}
+            header_change_reasons: list[str] = []
 
             if x_sender_raw is not None and not x_sender_address:
                 replacement_sender = return_path_address or from_header_address
                 if replacement_sender:
                     header_updates['X-Sender'] = replacement_sender
                     x_sender_address = replacement_sender
+                    header_change_reasons.append("normalized invalid X-Sender")
 
             from_email = (
                 x_sender_address
@@ -66,19 +68,21 @@ class Handler:
                 or envelope_from_address
             )
 
-            domain_hint = addressing.extract_domain_hint(
+            domain_context = config_resolver.resolve_domain_context(
                 x_sender_raw,
                 parsed_message.get('Return-Path'),
                 from_header_raw,
                 envelope.mail_from,
                 *(envelope.rcpt_tos or [])
             )
-            settings = domain_settings.lookup_domain_settings(domain_hint) if domain_hint else None
+            domain_hint = domain_context.domain
+            settings = domain_context.settings
 
             recipient_header_updates = remap.remap_recipient_headers(parsed_message)
             if recipient_header_updates:
                 header_updates.update(recipient_header_updates)
                 logging.info("Remapped recipient headers based on TO remap settings.")
+                header_change_reasons.append("remapped recipient headers")
             if envelope.rcpt_tos:
                 remapped_recipients = remap.remap_recipient_list(envelope.rcpt_tos)
                 if remapped_recipients != envelope.rcpt_tos:
@@ -86,7 +90,7 @@ class Handler:
                     logging.info("Remapped SMTP recipients based on TO remap settings.")
 
             if not from_email:
-                failback_address = addressing.lookup_failback_address(domain_hint)
+                failback_address = domain_context.failback_address
                 if failback_address:
                     logging.warning(
                         "Using failback sender address for malformed message (domain hint: %s)",
@@ -96,6 +100,7 @@ class Handler:
                     header_updates['From'] = failback_address
                     if not addressing.parse_email_address(parsed_message.get('X-Sender')):
                         header_updates['X-Sender'] = failback_address
+                    header_change_reasons.append("applied failback sender")
                 else:
                     logging.error("Unable to determine sender address and no failback configured.")
                     return "554 Transaction failed"
@@ -105,7 +110,7 @@ class Handler:
                 settings,
                 from_header_address
             ):
-                failback_address = addressing.lookup_failback_address(domain_hint)
+                failback_address = domain_context.failback_address
                 if failback_address:
                     header_updates['From'] = failback_address
                     header_updates['Reply-To'] = message_utils.build_reply_to_value(
@@ -118,6 +123,7 @@ class Handler:
                         domain_hint,
                         failback_address
                     )
+                    header_change_reasons.append("remapped From header")
                 else:
                     logging.warning(
                         "From remapping requested for domain %s but no failback address is "
@@ -131,8 +137,31 @@ class Handler:
                 # replace from header in envelope if lookup_from_email is set
                 header_updates['From'] = session.lookup_from_email
                 from_email = session.lookup_from_email
+                header_change_reasons.append("overrode From header from lookup user")
 
             if header_updates:
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    for header_name in sorted(header_updates.keys()):
+                        old_value = parsed_message.get(header_name)
+                        new_value = header_updates[header_name]
+                        if new_value is None:
+                            logging.debug(
+                                "Header update: %s removed (was %r)",
+                                header_name,
+                                old_value
+                            )
+                        else:
+                            logging.debug(
+                                "Header update: %s %r -> %r",
+                                header_name,
+                                old_value,
+                                new_value
+                            )
+                logging.info(
+                    "Message headers updated: %s; reasons=%s",
+                    ", ".join(sorted(header_updates.keys())),
+                    ", ".join(header_change_reasons) if header_change_reasons else "unspecified"
+                )
                 raw_message = message_utils.update_raw_headers(raw_message, header_updates)
 
             # Send email using Microsoft Graph API
@@ -144,12 +173,9 @@ class Handler:
 
             if success:
                 return "250 OK"
-            failure_notification = addressing.lookup_failure_notification_address(
-                domain_hint,
-                settings
-            )
+            failure_notification = domain_context.failure_notification
             if failure_notification:
-                notification_sender = addressing.lookup_failback_address(domain_hint) or from_email
+                notification_sender = domain_context.failback_address or from_email
                 if notification_sender:
                     graph_client.send_failure_notification(
                         access_token=session.access_token,
