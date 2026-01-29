@@ -1,993 +1,30 @@
 import asyncio
 import logging
-import requests
-import base64
-import os
-import re
-import uuid
-from dataclasses import dataclass
 from email import policy
-from email.message import EmailMessage
 from email.parser import BytesParser
-from email.utils import (
-    formatdate,
-    formataddr,
-    getaddresses,
-    make_msgid,
-    parseaddr,
-    parsedate_to_datetime,
-)
 
-import dkim
+from aiosmtpd.smtp import MISSING
 
-from custom import CustomController
-from aiosmtpd.smtp import AuthResult, MISSING
-
-from azure.identity import DefaultAzureCredential
-from azure.data.tables import TableClient
-
+import addressing
+import config
+import domain_settings
+import graph_client
+import message_utils
+import remap
 import sslContext
-
-
-# Load configuration from environment variables
-def load_env(name, default=None, sanitize=lambda x: x, valid_values=None, convert=lambda x: x):
-    value = sanitize(os.getenv(name, default))
-    if valid_values and value not in valid_values:
-        raise ValueError(f"Invalid {name}: {value}")
-    return convert(value)
-
-# Configuration
-LOG_LEVEL = load_env(
-    name='LOG_LEVEL',
-    default='WARNING',
-    valid_values=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-    sanitize=lambda x: x.upper()
-)
-TLS_SOURCE = load_env(
-    name='TLS_SOURCE', 
-    default='file', 
-    valid_values=['off', 'file', 'keyvault'], 
-    sanitize=lambda x: x.lower(),
-)
-REQUIRE_TLS = load_env(
-    name='REQUIRE_TLS', 
-    default='true', 
-    valid_values=['true', 'false'], 
-    sanitize=lambda x: x.lower(),
-    convert=lambda x: x == 'true'
-)
-SERVER_GREETING = load_env(
-    name='SERVER_GREETING', 
-    default='Microsoft Graph SMTP OAuth Relay'
-)
-HTTP_TIMEOUT_SECONDS = load_env(
-    name='HTTP_TIMEOUT_SECONDS',
-    default='30',
-    convert=lambda x: float(x)
-)
-TLS_CERT_FILEPATH = load_env(
-    name='TLS_CERT_FILEPATH',
-    default='certs/cert.pem'
-)
-TLS_KEY_FILEPATH = load_env(
-    name='TLS_KEY_FILEPATH',
-    default='certs/key.pem'
-)
-TLS_CIPHER_SUITE = load_env(
-    name='TLS_CIPHER_SUITE',
-    default=None # Make it optional
-)
-USERNAME_DELIMITER = load_env(
-    name='USERNAME_DELIMITER',
-    default='@',
-    valid_values=['@', ':', '|']
-)
-AZURE_KEY_VAULT_URL = load_env(
-    name='AZURE_KEY_VAULT_URL',
-    default=None,  # Make it optional
-)
-AZURE_KEY_VAULT_CERT_NAME = load_env(
-    name='AZURE_KEY_VAULT_CERT_NAME',
-    default=None,  # Make it optional
-)
-AZURE_TABLES_URL = load_env(
-    name='AZURE_TABLES_URL',
-    default=None,  # Make it optional
-)
-AZURE_TABLES_PARTITION_KEY = load_env(
-    name='AZURE_TABLES_PARTITION_KEY',
-    default='user'
-)
-FROM_REMAP_DOMAINS = load_env(
-    name='FROM_REMAP_DOMAINS',
-    default='',
-    sanitize=lambda x: x.strip() if x else x,
-    convert=lambda value: {
-        item.strip().lower() for item in value.split(",") if item.strip()
-    } if value else set()
-)
-FROM_REMAP_ADDRESSES = load_env(
-    name='FROM_REMAP_ADDRESSES',
-    default='',
-    sanitize=lambda x: x.strip() if x else x,
-    convert=lambda value: {
-        item.strip().lower() for item in value.split(",") if item.strip()
-    } if value else set()
-)
-TO_REMAP_DOMAINS = load_env(
-    name='TO_REMAP_DOMAINS',
-    default='',
-    sanitize=lambda x: x.strip() if x else x,
-    convert=lambda value: {
-        item.strip().lower() for item in value.split(",") if item.strip()
-    } if value else set()
-)
-TO_REMAP_ADDRESSES = load_env(
-    name='TO_REMAP_ADDRESSES',
-    default='',
-    sanitize=lambda x: x.strip() if x else x,
-    convert=lambda value: {
-        item.strip().lower() for item in value.split(",") if item.strip()
-    } if value else set()
-)
-DOMAIN_SETTINGS_TABLES_PARTITION_KEY = load_env(
-    name='DOMAIN_SETTINGS_TABLES_PARTITION_KEY',
-    default='domain'
-)
-DKIM_SELECTOR = load_env(
-    name='DKIM_SELECTOR',
-    default=None,
-    sanitize=lambda x: x.strip() if x else x
-)
-DKIM_PRIVATE_KEY = load_env(
-    name='DKIM_PRIVATE_KEY',
-    default=None,
-    sanitize=lambda x: x.replace('\\n', '\n') if x else x
-)
-DKIM_PRIVATE_KEY_PATH = load_env(
-    name='DKIM_PRIVATE_KEY_PATH',
-    default=None,
-    sanitize=lambda x: x.strip() if x else x
-)
-DKIM_ENABLED_RAW = os.getenv('DKIM_ENABLED')
-if DKIM_ENABLED_RAW is None:
-    DKIM_ENABLED = bool(DKIM_SELECTOR or DKIM_PRIVATE_KEY or DKIM_PRIVATE_KEY_PATH)
-else:
-    DKIM_ENABLED = load_env(
-        name='DKIM_ENABLED',
-        default='false',
-        valid_values=['true', 'false'],
-        sanitize=lambda x: x.lower(),
-        convert=lambda x: x == 'true'
-    )
-DKIM_CANONICALIZATION = load_env(
-    name='DKIM_CANONICALIZATION',
-    default='relaxed/relaxed',
-    sanitize=lambda x: x.strip().lower() if x else x
-)
-DKIM_HEADER_CANONICAL_NAMES = {
-    "from": "From",
-    "to": "To",
-    "subject": "Subject",
-    "date": "Date",
-    "message-id": "Message-ID",
-    "mime-version": "MIME-Version",
-    "content-type": "Content-Type",
-    "content-transfer-encoding": "Content-Transfer-Encoding",
-}
-
-
-def normalize_dkim_header_name(value: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
-        return ""
-    return DKIM_HEADER_CANONICAL_NAMES.get(cleaned.lower(), cleaned)
-
-
-def normalize_dkim_header_list(value: str) -> list[str]:
-    return [item for item in (normalize_dkim_header_name(name) for name in value.split(",")) if item]
-
-
-DKIM_HEADERS = load_env(
-    name='DKIM_HEADERS',
-    default='from,to,subject,date,message-id,mime-version,content-type,content-transfer-encoding',
-    sanitize=lambda x: x.strip() if x else x,
-    convert=normalize_dkim_header_list
-)
-DKIM_TABLES_PARTITION_KEY = load_env(
-    name='DKIM_TABLES_PARTITION_KEY',
-    default='dkim'
-)
-
-ADDRESS_DOMAIN_PATTERN = re.compile(r'@([^>\s]+)')
-SMTP_DOT_ATOM_TEXT = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
-SMTP_DOT_ATOM = rf"{SMTP_DOT_ATOM_TEXT}(?:\.{SMTP_DOT_ATOM_TEXT})*"
-SMTP_QUOTED_STRING = r"\"(?:[\x20-\x21\x23-\x5B\x5D-\x7E]|\\[\x20-\x7E])*\""
-SMTP_ADDRESS_LITERAL = r"\[(?:IPv6:[0-9A-Fa-f:.]+|[\x21-\x5A\x5E-\x7E]+)\]"
-SMTP_DOMAIN = rf"(?:{SMTP_DOT_ATOM}|{SMTP_ADDRESS_LITERAL})"
-SMTP_LOCAL_PART = rf"(?:{SMTP_DOT_ATOM}|{SMTP_QUOTED_STRING})"
-SMTP_DOT_ATOM_PATTERN = re.compile(rf"^{SMTP_DOT_ATOM}$")
-SMTP_QUOTED_STRING_PATTERN = re.compile(rf"^{SMTP_QUOTED_STRING}$")
-SMTP_DOMAIN_PATTERN = re.compile(rf"^{SMTP_DOMAIN}$")
-BARE_LF_PATTERN = re.compile(br"(?<!\r)\n")
-
-
-@dataclass(frozen=True)
-class DkimConfig:
-    selector: str
-    private_key: str
-    canonicalization: str
-    headers: list[str]
-    source: str
-
-
-@dataclass(frozen=True)
-class DomainSettings:
-    from_remap: bool
-    remap_addresses: set[str]
-    failure_notification: str | None
-
-
-DKIM_DEFAULT_CONFIG: DkimConfig | None = None
-
-
-def parse_email_address(value: str | None) -> str | None:
-    if not value:
-        return None
-    candidate = value.strip()
-    if candidate in ('', '<>'):
-        return None
-    address = parseaddr(candidate)[1].strip()
-    if not address or address == '<>' or '@' not in address:
-        return None
-    return address
-
-
-def normalize_bool(value: object) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return None
-    normalized = str(value).strip().lower()
-    if normalized in {"true", "1", "yes", "y"}:
-        return True
-    if normalized in {"false", "0", "no", "n"}:
-        return False
-    return None
-
-
-def is_valid_smtp_mailbox(address: str, *, allow_null: bool = False) -> bool:
-    if allow_null and address == "<>":
-        return True
-    if not address or "<" in address or ">" in address:
-        return False
-    if address.count("@") != 1:
-        return False
-    local_part, domain_part = address.split("@", 1)
-    if not (SMTP_DOT_ATOM_PATTERN.match(local_part) or SMTP_QUOTED_STRING_PATTERN.match(local_part)):
-        return False
-    if not SMTP_DOMAIN_PATTERN.match(domain_part):
-        return False
-    if len(local_part) > 64 or len(domain_part) > 255:
-        return False
-    if domain_part.startswith("[") and domain_part.endswith("]"):
-        return True
-    labels = domain_part.split(".")
-    if any(len(label) == 0 or len(label) > 63 for label in labels):
-        return False
-    return True
-
-
-def validate_rfc5322_message(raw_message: bytes) -> str | None:
-    if BARE_LF_PATTERN.search(raw_message):
-        return "550 5.6.0 Message contains bare LF line endings"
-
-    parsed_message = BytesParser(policy=policy.SMTP).parsebytes(raw_message)
-    from_header = parsed_message.get("From")
-    date_header = parsed_message.get("Date")
-    if not from_header:
-        return "554 5.6.0 Missing required header: From"
-    if not date_header:
-        return "554 5.6.0 Missing required header: Date"
-
-    addresses = [addr for _, addr in getaddresses([from_header]) if addr]
-    if not addresses or any("@" not in addr for addr in addresses):
-        return "554 5.6.0 Invalid From header"
-
-    try:
-        if parsedate_to_datetime(date_header) is None:
-            return "554 5.6.0 Invalid Date header"
-    except (TypeError, ValueError):
-        return "554 5.6.0 Invalid Date header"
-    return None
-
-
-def extract_domain_hint(*values: str | None) -> str | None:
-    for value in values:
-        if not value:
-            continue
-        match = ADDRESS_DOMAIN_PATTERN.search(value)
-        if match:
-            return match.group(1).strip().strip('>').lower()
-    return None
-
-
-def failback_env_var_name(domain: str) -> str:
-    return f"{domain.replace('.', '_').upper()}_FROM_FAILBACK"
-
-
-def lookup_failback_address(domain: str | None) -> str | None:
-    if not domain:
-        return None
-    return os.getenv(failback_env_var_name(domain))
-
-
-def failure_notification_env_var_name(domain: str) -> str:
-    return f"{domain.replace('.', '_').upper()}_FAILURE_NOTIFICATION"
-
-
-def lookup_failure_notification_address(
-    domain: str | None,
-    domain_settings: DomainSettings | None
-) -> str | None:
-    if not domain:
-        return None
-    env_value = os.getenv(failure_notification_env_var_name(domain))
-    if env_value:
-        return parse_email_address(env_value)
-    if domain_settings and domain_settings.failure_notification:
-        return domain_settings.failure_notification
-    return None
-
-
-def to_failback_env_var_name(domain: str) -> str:
-    return f"{domain.replace('.', '_').upper()}_TO_FAILBACK"
-
-
-def lookup_to_failback_address(domain: str | None) -> str | None:
-    if not domain:
-        return None
-    env_value = os.getenv(to_failback_env_var_name(domain))
-    if env_value:
-        return parse_email_address(env_value)
-    return None
-
-
-def decode_uuid_or_base64url(input_str: str) -> str:
-    """
-    Checks if input is a UUID string, otherwise attempts to decode as base64url and convert to UUID string.
-    Returns a decoded string in UUID format.
-    """
-
-    # check if the input is a UUID
-    uuid_pattern = re.compile(r'^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$')
-    if uuid_pattern.match(input_str):
-        return input_str
-
-    # Attempt to decode as base64url
-    try:
-        return str(uuid.UUID(bytes=base64.urlsafe_b64decode(input_str + '=' * (-len(input_str) % 4))))
-    except Exception:
-        raise ValueError(f"Invalid base64url encoding in input '{input_str}'")
-
-
-def split_raw_message(raw_message: bytes) -> tuple[bytes, bytes, bytes]:
-    header_end = raw_message.find(b"\r\n\r\n")
-    separator = b"\r\n\r\n"
-    if header_end == -1:
-        header_end = raw_message.find(b"\n\n")
-        separator = b"\n\n"
-    if header_end == -1:
-        if raw_message.startswith(b"\r\n"):
-            return b"", b"\r\n", raw_message[len(b"\r\n"):]
-        if raw_message.startswith(b"\n"):
-            return b"", b"\n", raw_message[len(b"\n"):]
-        return raw_message, b"", b""
-    header_bytes = raw_message[:header_end]
-    body_bytes = raw_message[header_end + len(separator):]
-    return header_bytes, separator, body_bytes
-
-
-def update_raw_headers(raw_message: bytes, updates: dict[str, str | None]) -> bytes:
-    header_bytes, separator, body_bytes = split_raw_message(raw_message)
-    line_ending = b"\r\n" if b"\r\n" in header_bytes else b"\n"
-
-    updated_keys = {key.lower() for key in updates}
-    new_lines: list[bytes] = []
-    skip_header = False
-
-    for line in header_bytes.splitlines(keepends=True):
-        if line.startswith((b" ", b"\t")):
-            if skip_header:
-                continue
-            new_lines.append(line)
-            continue
-
-        header_name = line.split(b":", 1)[0].decode("utf-8", "replace").strip().lower()
-        skip_header = header_name in updated_keys
-        if skip_header:
-            continue
-        new_lines.append(line)
-
-    for header_name, header_value in updates.items():
-        if header_value is None:
-            continue
-        new_lines.append(f"{header_name}: {header_value}".encode("utf-8") + line_ending)
-
-    rebuilt_headers = b"".join(new_lines)
-    if separator:
-        return rebuilt_headers + separator + body_bytes
-    if body_bytes:
-        return rebuilt_headers + (line_ending + line_ending) + body_bytes
-    return rebuilt_headers
-
-
-def build_reply_to_value(existing_reply_to: str | None, original_from: str) -> str:
-    if not existing_reply_to:
-        return original_from
-    existing_addresses = {
-        addr.lower() for _, addr in getaddresses([existing_reply_to]) if addr
-    }
-    original_addresses = [addr for _, addr in getaddresses([original_from]) if addr]
-    if not original_addresses:
-        return existing_reply_to
-    if any(addr.lower() not in existing_addresses for addr in original_addresses):
-        return f"{existing_reply_to}, {original_from}"
-    return existing_reply_to
-
-
-def is_remap_enabled(
-    domain: str,
-    domain_settings: DomainSettings | None,
-    from_address: str | None
-) -> bool:
-    if from_address and from_address.lower() in FROM_REMAP_ADDRESSES:
-        return True
-    if domain in FROM_REMAP_DOMAINS:
-        return True
-    if domain_settings and domain_settings.from_remap:
-        return True
-    if domain_settings and from_address and from_address.lower() in domain_settings.remap_addresses:
-        return True
-    return False
-
-
-def is_recipient_remap_enabled(address: str) -> bool:
-    if "@" not in address:
-        return False
-    normalized = address.lower()
-    if normalized in TO_REMAP_ADDRESSES:
-        return True
-    domain = normalized.split("@", 1)[-1]
-    if domain in TO_REMAP_DOMAINS:
-        return True
-    return False
-
-
-def remap_recipient_address(address: str) -> str | None:
-    if "@" not in address:
-        return None
-    if not is_recipient_remap_enabled(address):
-        return None
-    domain = address.split("@", 1)[-1].lower()
-    failback = lookup_to_failback_address(domain)
-    if not failback:
-        logging.warning(
-            "Recipient remapping requested for %s but no TO failback address is configured for %s",
-            address,
-            domain
-        )
-        return None
-    return failback
-
-
-def remap_recipient_headers(parsed_message: EmailMessage) -> dict[str, str]:
-    header_updates: dict[str, str] = {}
-    for header_name in ("To", "Cc", "Bcc"):
-        header_value = parsed_message.get(header_name)
-        if not header_value:
-            continue
-        addresses = getaddresses([header_value])
-        if not addresses:
-            continue
-        updated_addresses: list[str] = []
-        seen: set[str] = set()
-        header_changed = False
-        for display_name, address in addresses:
-            if not address:
-                continue
-            replacement = remap_recipient_address(address)
-            if replacement:
-                address = replacement
-                header_changed = True
-            address_key = address.lower()
-            if address_key in seen:
-                header_changed = True
-                continue
-            seen.add(address_key)
-            if display_name:
-                updated_addresses.append(formataddr((display_name, address)))
-            else:
-                updated_addresses.append(address)
-        if header_changed:
-            header_updates[header_name] = ", ".join(updated_addresses)
-    return header_updates
-
-
-def remap_recipient_list(addresses: list[str]) -> list[str]:
-    updated: list[str] = []
-    seen: set[str] = set()
-    for address in addresses:
-        replacement = remap_recipient_address(address)
-        if replacement:
-            address = replacement
-        address_key = address.lower()
-        if address_key in seen:
-            continue
-        seen.add(address_key)
-        updated.append(address)
-    return updated
-
-
-def parse_dkim_canonicalization(value: str) -> tuple[bytes, bytes]:
-    parts = value.split("/", maxsplit=1)
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise ValueError(f"Invalid DKIM canonicalization value: {value}")
-    return parts[0].encode("utf-8"), parts[1].encode("utf-8")
-
-
-def normalize_dkim_private_key(value: str) -> str:
-    normalized = value.strip()
-    if "BEGIN" not in normalized or "PRIVATE KEY" not in normalized:
-        raise ValueError("DKIM private key must be PEM-encoded")
-    return normalized
-
-
-def lookup_domain_settings(domain: str) -> DomainSettings | None:
-    if not AZURE_TABLES_URL:
-        return None
-
-    try:
-        credential = DefaultAzureCredential()
-        with TableClient.from_table_url(table_url=AZURE_TABLES_URL, credential=credential) as client: # pyright: ignore[reportArgumentType]
-            entities = client.query_entities(
-                query_filter=f"PartitionKey eq '{DOMAIN_SETTINGS_TABLES_PARTITION_KEY}' and RowKey eq '{domain}'"
-            )
-            entity = None
-            for item in entities:
-                entity = item
-                break
-    except Exception as exc:
-        logging.error("Failed to query domain settings from Azure Table: %s", exc)
-        return None
-
-    if not entity:
-        return None
-
-    from_remap = normalize_bool(entity.get("from_remap")) or False
-    remap_addresses_value = entity.get("from_remap_addresses")
-    remap_addresses = {
-        item.strip().lower()
-        for item in str(remap_addresses_value).split(",")
-        if remap_addresses_value and item.strip()
-    }
-    failure_notification = parse_email_address(entity.get("failure_notification"))
-    return DomainSettings(
-        from_remap=from_remap,
-        remap_addresses=remap_addresses,
-        failure_notification=failure_notification
-    )
-
-
-def read_dkim_private_key_from_path(path: str) -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return normalize_dkim_private_key(handle.read())
-    except FileNotFoundError as exc:
-        raise ValueError(f"DKIM private key file not found: {path}") from exc
-    except OSError as exc:
-        raise ValueError(f"Failed to read DKIM private key file: {path}") from exc
-
-
-def build_dkim_config(
-    selector: str | None,
-    private_key: str | None,
-    private_key_path: str | None,
-    canonicalization: str,
-    headers: list[str],
-    source: str
-) -> DkimConfig:
-    if not selector:
-        raise ValueError(f"DKIM selector is required ({source})")
-
-    if private_key_path:
-        if private_key:
-            logging.warning(
-                "Both DKIM_PRIVATE_KEY and DKIM_PRIVATE_KEY_PATH provided; using DKIM_PRIVATE_KEY_PATH (%s)",
-                source
-            )
-        resolved_key = read_dkim_private_key_from_path(private_key_path)
-    elif private_key:
-        resolved_key = normalize_dkim_private_key(private_key)
-    else:
-        raise ValueError(f"DKIM private key is required ({source})")
-
-    if not headers:
-        raise ValueError(f"DKIM headers list cannot be empty ({source})")
-
-    parse_dkim_canonicalization(canonicalization)
-
-    return DkimConfig(
-        selector=selector,
-        private_key=resolved_key,
-        canonicalization=canonicalization,
-        headers=headers,
-        source=source
-    )
-
-
-def initialize_dkim_config() -> None:
-    global DKIM_DEFAULT_CONFIG
-
-    if not DKIM_ENABLED:
-        if DKIM_SELECTOR or DKIM_PRIVATE_KEY or DKIM_PRIVATE_KEY_PATH:
-            logging.info("DKIM settings provided but DKIM is disabled (DKIM_ENABLED=false).")
-        DKIM_DEFAULT_CONFIG = None
-        return
-
-    try:
-        DKIM_DEFAULT_CONFIG = build_dkim_config(
-            selector=DKIM_SELECTOR,
-            private_key=DKIM_PRIVATE_KEY,
-            private_key_path=DKIM_PRIVATE_KEY_PATH,
-            canonicalization=DKIM_CANONICALIZATION,
-            headers=DKIM_HEADERS,
-            source="environment"
-        )
-        logging.info("DKIM signing enabled with selector '%s' (source: %s).",
-                     DKIM_DEFAULT_CONFIG.selector,
-                     DKIM_DEFAULT_CONFIG.source)
-    except ValueError as exc:
-        logging.error("DKIM configuration error: %s", exc)
-        raise
-
-
-def lookup_dkim_config(domain: str) -> DkimConfig | None:
-    if not AZURE_TABLES_URL:
-        return None
-
-    try:
-        credential = DefaultAzureCredential()
-        with TableClient.from_table_url(table_url=AZURE_TABLES_URL, credential=credential) as client: # pyright: ignore[reportArgumentType]
-            entities = client.query_entities(
-                query_filter=f"PartitionKey eq '{DKIM_TABLES_PARTITION_KEY}' and RowKey eq '{domain}'"
-            )
-            entity = None
-            for item in entities:
-                entity = item
-                break
-    except Exception as exc:
-        logging.error("Failed to query DKIM settings from Azure Table: %s", exc)
-        return None
-
-    if not entity:
-        return None
-
-    selector = entity.get('dkim_selector')
-    private_key = entity.get('dkim_private_key')
-    private_key_path = entity.get('dkim_private_key_path')
-    canonicalization = entity.get('dkim_canonicalization', DKIM_CANONICALIZATION)
-    headers_value = entity.get('dkim_headers')
-    if headers_value:
-        headers = normalize_dkim_header_list(str(headers_value))
-    else:
-        headers = DKIM_HEADERS
-
-    try:
-        return build_dkim_config(
-            selector=selector,
-            private_key=private_key,
-            private_key_path=private_key_path,
-            canonicalization=canonicalization,
-            headers=headers,
-            source=f"azure table entry for domain {domain}"
-        )
-    except ValueError as exc:
-        logging.error("Invalid DKIM settings for domain %s: %s", domain, exc)
-        return None
-
-
-def get_dkim_config_for_sender(from_email: str) -> DkimConfig | None:
-    if not DKIM_ENABLED:
-        return None
-    domain = from_email.split("@", 1)[-1].lower()
-    config = lookup_dkim_config(domain)
-    if config:
-        return config
-    return DKIM_DEFAULT_CONFIG
-
-
-def sign_raw_message_with_dkim(
-    raw_message: bytes,
-    from_email: str,
-    selector: str,
-    private_key: str,
-    canonicalization: str,
-    header_list: list[str]
-) -> bytes:
-    header_bytes, separator, body_bytes = split_raw_message(raw_message)
-    normalized_header_bytes = header_bytes.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
-    if separator in (b"\r\n", b"\n"):
-        normalized_separator = b"\r\n"
-    elif separator:
-        normalized_separator = b"\r\n\r\n"
-    else:
-        normalized_separator = b""
-    normalized_message = normalized_header_bytes
-    if normalized_separator:
-        normalized_message += normalized_separator + body_bytes
-
-    domain = from_email.split("@", 1)[-1].encode("utf-8")
-    canonicalize = parse_dkim_canonicalization(canonicalization)
-    include_headers = [header.encode("utf-8") for header in header_list]
-    signature = dkim.sign(
-        message=normalized_message,
-        selector=selector.encode("utf-8"),
-        domain=domain,
-        privkey=private_key.encode("utf-8"),
-        canonicalize=canonicalize,
-        include_headers=include_headers
-    )
-    signature = signature.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
-    signature_lines = signature.rstrip(b"\r\n").split(b"\r\n")
-    if len(signature_lines) > 1:
-        signature_lines = [
-            signature_lines[0],
-            *[
-                line if line.startswith((b" ", b"\t")) else b" " + line
-                for line in signature_lines[1:]
-            ]
-        ]
-    signature = b"\r\n".join(signature_lines) + b"\r\n"
-
-    header_lines = normalized_header_bytes.splitlines(keepends=True)
-    insert_at = 0
-    for index, line in enumerate(header_lines):
-        if line.startswith((b" ", b"\t")):
-            continue
-        header_name = line.split(b":", 1)[0].strip().lower()
-        if header_name == b"received":
-            insert_at = index
-            break
-    if header_lines:
-        rebuilt_headers = b"".join(header_lines[:insert_at]) + signature + b"".join(header_lines[insert_at:])
-    else:
-        rebuilt_headers = signature
-
-    if normalized_separator:
-        return rebuilt_headers + normalized_separator + body_bytes
-    return rebuilt_headers
-
-
-def lookup_user(lookup_id: str) -> tuple[str, str, str|None]:
-    """
-    Search in Azure Table for user information based on the lookup_id (RowKey).
-    Returns (tenant_id, client_id, from_email) or raises ValueError if not found.
-    """
-    if not AZURE_TABLES_URL:
-        raise ValueError("AZURE_TABLES_URL environment variable not set")
-
-    try:
-        credential = DefaultAzureCredential()
-        with TableClient.from_table_url(table_url=AZURE_TABLES_URL, credential=credential) as client: # pyright: ignore[reportArgumentType]
-            entities = client.query_entities(query_filter=f"PartitionKey eq '{AZURE_TABLES_PARTITION_KEY}' and RowKey eq '{lookup_id}'")
-            entity = None
-            for i in entities:
-                entity = i
-                break
-    except Exception as e:
-        raise RuntimeError(f"Failed to query Azure Table: {str(e)}") from e
-
-    if not entity:
-        raise ValueError(f"No entity found for RowKey '{lookup_id}'")
-
-    tenant_id = entity.get('tenant_id')
-    client_id = entity.get('client_id')
-    from_email = entity.get('from_email')
-
-    if not tenant_id or not client_id:
-        raise ValueError(f"Entity for RowKey '{lookup_id}' is missing tenant_id or client_id")
-
-    return tenant_id, client_id, from_email
-
-
-def parse_username(username: str) -> tuple[str, str, str|None]:
-    """
-    Parse the username to extract tenant_id and client_id.
-    The expected format is: tenant_id{USERNAME_DELIMITER}client_id{. optional_tld}
-    """
-    
-    # remove the optional TLD if present
-    if '.' in username:
-        username = username.split('.')[0]
-
-    # Check if username is valid
-    if not username or USERNAME_DELIMITER not in username:
-        raise ValueError(f"Invalid username format. Expected format: tenant_id{USERNAME_DELIMITER}client_id")
-    
-    # Split the username by the delimiter
-    parts = username.split(USERNAME_DELIMITER)
-    if len(parts) != 2:
-        raise ValueError(f"Invalid username format. Expected exactly one '{USERNAME_DELIMITER}' character")
-    
-    # check if the second part hints a user stored in the lookup table
-    if parts[1] == 'lookup':
-        return lookup_user(parts[0])
-
-    # else return both parts decoded
-    return decode_uuid_or_base64url(parts[0]), decode_uuid_or_base64url(parts[1]), None
-
-
-def get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "scope": "https://graph.microsoft.com/.default"
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    
-    try:
-        response = requests.post(
-            url=f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token", 
-            data=data, 
-            headers=headers,
-            timeout=HTTP_TIMEOUT_SECONDS
-        )
-        response.raise_for_status()
-        return response.json().get("access_token")
-    except requests.RequestException as e:
-        logging.error(f"OAuth token request failed: {str(e)}")
-        if hasattr(e, 'response') and e.response:
-            logging.error(f"Response status: {e.response.status_code}, Response body: {e.response.text}")
-        raise
-
-
-GRAPH_MIME_CONTENT_TYPE = "text/plain"
-
-
-def send_email(access_token: str, body: bytes, from_email: str) -> tuple[bool, str | None, int | None]:
-    url = f"https://graph.microsoft.com/v1.0/users/{from_email}/sendMail"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": GRAPH_MIME_CONTENT_TYPE
-    }
-    
-    try:
-        data = base64.b64encode(body)
-        logging.debug(f"Sending email from {from_email}")
-        
-        response = requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
-        if response.status_code == 202:
-            logging.info("Email sent successfully!")
-            return True, None, response.status_code
-        error_detail = f"Status code {response.status_code}; response body: {response.text}"
-        logging.error(f"Failed to send email: {error_detail}")
-        return False, error_detail, response.status_code
-    except Exception as e:
-        logging.exception(f"Exception while sending email: {str(e)}")
-        return False, str(e), None
-
-
-def send_failure_notification(
-    access_token: str,
-    from_email: str,
-    notification_address: str,
-    parsed_message,
-    envelope,
-    error_detail: str | None
-) -> None:
-    subject_value = parsed_message.get("Subject")
-    subject = "SMTP relay failure"
-    if subject_value:
-        subject = f"{subject}: {subject_value}"
-
-    body_lines = [
-        "SMTP OAuth Relay failed to send a message.",
-        f"Error: {error_detail or 'Unknown error'}",
-    ]
-
-    from_header = parsed_message.get("From")
-    to_header = parsed_message.get("To")
-    message_id = parsed_message.get("Message-ID")
-    envelope_from = envelope.mail_from
-    recipients = ", ".join(envelope.rcpt_tos or [])
-
-    if from_header:
-        body_lines.append(f"Original From: {from_header}")
-    if envelope_from:
-        body_lines.append(f"Envelope From: {envelope_from}")
-    if to_header:
-        body_lines.append(f"To: {to_header}")
-    if recipients:
-        body_lines.append(f"Recipients: {recipients}")
-    if subject_value:
-        body_lines.append(f"Subject: {subject_value}")
-    if message_id:
-        body_lines.append(f"Message-ID: {message_id}")
-
-    message = EmailMessage()
-    message["From"] = from_email
-    message["To"] = notification_address
-    message["Subject"] = subject
-    message["Date"] = formatdate(localtime=True)
-    message["Message-ID"] = make_msgid(domain=from_email.split("@")[-1] if "@" in from_email else None)
-    message.set_content("\n".join(body_lines))
-
-    success, notification_error, _ = send_email(
-        access_token=access_token,
-        body=message.as_bytes(policy=policy.SMTP),
-        from_email=from_email
-    )
-    if not success:
-        logging.error(
-            "Failed to send failure notification to %s: %s",
-            notification_address,
-            notification_error or "Unknown error"
-        )
-
-
-
-class Authenticator:
-    def __call__(self, server, session, envelope, mechanism, auth_data):
-        try:
-            # Only support LOGIN and PLAIN mechanisms
-            if mechanism not in ('LOGIN', 'PLAIN'):
-                logging.warning(f"Unsupported auth mechanism: {mechanism}")
-                return AuthResult(success=False, handled=False, message="504 5.7.4 Unsupported authentication mechanism")
-                
-            # Check if authentication data is present
-            if not auth_data or not auth_data.login or not auth_data.password:
-                logging.warning("Missing authentication data")
-                return AuthResult(success=False, handled=False, message="535 5.7.8 Authentication credentials missing")
-                
-            try:
-                login_str = auth_data.login.decode("utf-8")
-            except Exception as e:
-                logging.error(f"Failed to decode login string: {str(e)}")
-                return AuthResult(success=False, handled=False, message="535 5.7.8 Invalid authentication credentials encoding")
-            
-            # Parse tenant_id and client_id from login string using the configured format
-            try:
-                tenant_id, client_id, from_email = parse_username(login_str)
-            except ValueError as e:
-                logging.error(str(e))
-                return AuthResult(success=False, handled=False, message=f"535 5.7.8 {str(e)}")
-                
-            client_secret = auth_data.password
-            session.lookup_from_email = from_email
-
-            try:
-                session.access_token = get_access_token(tenant_id, client_id, client_secret)
-                return AuthResult(success=True)
-            except Exception as e:
-                logging.error(f"Authentication failed: {str(e)}")
-                return AuthResult(success=False, handled=False, message="535 5.7.8 Authentication failed")
-                
-        except Exception as e:
-            logging.exception(f"Unexpected error during authentication: {str(e)}")
-            return AuthResult(success=False, handled=False, message="554 5.7.0 Unexpected error during authentication")
+from auth import Authenticator
+from custom import CustomController
 
 
 class Handler:
     async def handle_MAIL(self, server, session, envelope, address, mail_options):
-        if not is_valid_smtp_mailbox(address, allow_null=True):
+        if not addressing.is_valid_smtp_mailbox(address, allow_null=True):
             logging.warning("Rejected malformed MAIL FROM address: %s", address)
             return "553 5.1.3 Error: malformed address"
         return MISSING
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
-        if not is_valid_smtp_mailbox(address, allow_null=False):
+        if not addressing.is_valid_smtp_mailbox(address, allow_null=False):
             logging.warning("Rejected malformed RCPT TO address: %s", address)
             return "553 5.1.3 Error: malformed address"
         return MISSING
@@ -1001,19 +38,19 @@ class Handler:
                 return "530 5.7.0 Authentication required"
 
             raw_message = envelope.content
-            rfc5322_error = validate_rfc5322_message(raw_message)
+            rfc5322_error = message_utils.validate_rfc5322_message(raw_message)
             if rfc5322_error:
                 logging.error("RFC 5322 validation failed: %s", rfc5322_error)
                 return rfc5322_error
 
             parsed_message = BytesParser(policy=policy.SMTP).parsebytes(raw_message)
             x_sender_raw = parsed_message.get('X-Sender')
-            x_sender_address = parse_email_address(x_sender_raw)
+            x_sender_address = addressing.parse_email_address(x_sender_raw)
 
-            return_path_address = parse_email_address(parsed_message.get('Return-Path'))
+            return_path_address = addressing.parse_email_address(parsed_message.get('Return-Path'))
             from_header_raw = parsed_message.get('From')
-            from_header_address = parse_email_address(from_header_raw)
-            envelope_from_address = parse_email_address(envelope.mail_from)
+            from_header_address = addressing.parse_email_address(from_header_raw)
+            envelope_from_address = addressing.parse_email_address(envelope.mail_from)
             header_updates: dict[str, str | None] = {}
 
             if x_sender_raw is not None and not x_sender_address:
@@ -1022,29 +59,34 @@ class Handler:
                     header_updates['X-Sender'] = replacement_sender
                     x_sender_address = replacement_sender
 
-            from_email = x_sender_address or return_path_address or from_header_address or envelope_from_address
+            from_email = (
+                x_sender_address
+                or return_path_address
+                or from_header_address
+                or envelope_from_address
+            )
 
-            domain_hint = extract_domain_hint(
+            domain_hint = addressing.extract_domain_hint(
                 x_sender_raw,
                 parsed_message.get('Return-Path'),
                 from_header_raw,
                 envelope.mail_from,
                 *(envelope.rcpt_tos or [])
             )
-            domain_settings = lookup_domain_settings(domain_hint) if domain_hint else None
+            settings = domain_settings.lookup_domain_settings(domain_hint) if domain_hint else None
 
-            recipient_header_updates = remap_recipient_headers(parsed_message)
+            recipient_header_updates = remap.remap_recipient_headers(parsed_message)
             if recipient_header_updates:
                 header_updates.update(recipient_header_updates)
                 logging.info("Remapped recipient headers based on TO remap settings.")
             if envelope.rcpt_tos:
-                remapped_recipients = remap_recipient_list(envelope.rcpt_tos)
+                remapped_recipients = remap.remap_recipient_list(envelope.rcpt_tos)
                 if remapped_recipients != envelope.rcpt_tos:
                     envelope.rcpt_tos = remapped_recipients
                     logging.info("Remapped SMTP recipients based on TO remap settings.")
 
             if not from_email:
-                failback_address = lookup_failback_address(domain_hint)
+                failback_address = addressing.lookup_failback_address(domain_hint)
                 if failback_address:
                     logging.warning(
                         "Using failback sender address for malformed message (domain hint: %s)",
@@ -1052,21 +94,21 @@ class Handler:
                     )
                     from_email = failback_address
                     header_updates['From'] = failback_address
-                    if not parse_email_address(parsed_message.get('X-Sender')):
+                    if not addressing.parse_email_address(parsed_message.get('X-Sender')):
                         header_updates['X-Sender'] = failback_address
                 else:
                     logging.error("Unable to determine sender address and no failback configured.")
                     return "554 Transaction failed"
 
-            if domain_hint and from_header_raw and is_remap_enabled(
+            if domain_hint and from_header_raw and remap.is_remap_enabled(
                 domain_hint,
-                domain_settings,
+                settings,
                 from_header_address
             ):
-                failback_address = lookup_failback_address(domain_hint)
+                failback_address = addressing.lookup_failback_address(domain_hint)
                 if failback_address:
                     header_updates['From'] = failback_address
-                    header_updates['Reply-To'] = build_reply_to_value(
+                    header_updates['Reply-To'] = message_utils.build_reply_to_value(
                         parsed_message.get('Reply-To'),
                         from_header_raw
                     )
@@ -1078,50 +120,38 @@ class Handler:
                     )
                 else:
                     logging.warning(
-                        "From remapping requested for domain %s but no failback address is configured",
-                        domain_hint
+                        "From remapping requested for domain %s but no failback address is "
+                        "configured",
+                        domain_hint,
                     )
 
             if session.lookup_from_email:
-                # some clients won't let you set a from address independent of the auth user. Issue: #36
+                # Some clients won't let you set a from address independent of the auth user.
+                # Issue: #36
                 # replace from header in envelope if lookup_from_email is set
                 header_updates['From'] = session.lookup_from_email
                 from_email = session.lookup_from_email
 
             if header_updates:
-                raw_message = update_raw_headers(raw_message, header_updates)
-
-            dkim_config = get_dkim_config_for_sender(from_email)
-            if dkim_config:
-                try:
-                    raw_message = sign_raw_message_with_dkim(
-                        raw_message=raw_message,
-                        from_email=from_email,
-                        selector=dkim_config.selector,
-                        private_key=dkim_config.private_key,
-                        canonicalization=dkim_config.canonicalization,
-                        header_list=dkim_config.headers
-                    )
-                except Exception as e:
-                    logging.exception("DKIM signing failed (source: %s): %s", dkim_config.source, e)
-                    return "554 5.7.0 DKIM signing failed"
-            elif DKIM_ENABLED:
-                logging.error(
-                    "DKIM is enabled but no valid configuration is available for sender domain %s",
-                    from_email.split("@", 1)[-1]
-                )
-                return "554 5.7.0 DKIM configuration missing"
+                raw_message = message_utils.update_raw_headers(raw_message, header_updates)
 
             # Send email using Microsoft Graph API
-            success, error_detail, status_code = send_email(session.access_token, raw_message, from_email)
+            success, error_detail, status_code = graph_client.send_email(
+                session.access_token,
+                raw_message,
+                from_email
+            )
 
             if success:
                 return "250 OK"
-            failure_notification = lookup_failure_notification_address(domain_hint, domain_settings)
+            failure_notification = addressing.lookup_failure_notification_address(
+                domain_hint,
+                settings
+            )
             if failure_notification:
-                notification_sender = lookup_failback_address(domain_hint) or from_email
+                notification_sender = addressing.lookup_failback_address(domain_hint) or from_email
                 if notification_sender:
-                    send_failure_notification(
+                    graph_client.send_failure_notification(
                         access_token=session.access_token,
                         from_email=notification_sender,
                         notification_address=failure_notification,
@@ -1131,60 +161,69 @@ class Handler:
                     )
                 else:
                     logging.warning(
-                        "Failure notification configured for domain %s but no sender address is available",
-                        domain_hint
+                        "Failure notification configured for domain %s but no sender address is "
+                        "available",
+                        domain_hint,
                     )
             await asyncio.sleep(0.5)
             if status_code == 404:
                 return "551 User not local"
             return "451 Action aborted"
-                
+
         except Exception as e:
             logging.exception(f"Error handling DATA command: {str(e)}")
             return "554 Transaction failed"
 
 
-
 # noinspection PyShadowingNames
 async def amain():
-    initialize_dkim_config()
-    match TLS_SOURCE:
+    match config.TLS_SOURCE:
         case 'file':
-            context = sslContext.from_file(TLS_CERT_FILEPATH, TLS_KEY_FILEPATH)
-            logging.info(f"Loaded certificate from file: {TLS_CERT_FILEPATH}")
-            
+            context = sslContext.from_file(config.TLS_CERT_FILEPATH, config.TLS_KEY_FILEPATH)
+            logging.info(f"Loaded certificate from file: {config.TLS_CERT_FILEPATH}")
+
         case 'keyvault':
-            if not AZURE_KEY_VAULT_URL or not AZURE_KEY_VAULT_CERT_NAME:
-                logging.error("Azure Key Vault URL and Certificate Name must be set when TLS_SOURCE is 'keyvault'")
+            if not config.AZURE_KEY_VAULT_URL or not config.AZURE_KEY_VAULT_CERT_NAME:
+                logging.error(
+                    "Azure Key Vault URL and Certificate Name must be set when "
+                    "TLS_SOURCE is 'keyvault'"
+                )
                 raise ValueError("Azure Key Vault URL and Certificate Name must be set")
-            context = sslContext.from_keyvault(AZURE_KEY_VAULT_URL, AZURE_KEY_VAULT_CERT_NAME)
-            logging.info(f"Loaded certificate from Azure Key Vault: {AZURE_KEY_VAULT_CERT_NAME}")
-            
+            context = sslContext.from_keyvault(
+                config.AZURE_KEY_VAULT_URL,
+                config.AZURE_KEY_VAULT_CERT_NAME
+            )
+            logging.info(
+                "Loaded certificate from Azure Key Vault: %s",
+                config.AZURE_KEY_VAULT_CERT_NAME
+            )
+
         case 'off':
             context = None
 
         case _:
-            logging.error(f"Invalid TLS_SOURCE: {TLS_SOURCE}")
-            raise ValueError(f"Invalid TLS_SOURCE: {TLS_SOURCE}")
+            logging.error(f"Invalid TLS_SOURCE: {config.TLS_SOURCE}")
+            raise ValueError(f"Invalid TLS_SOURCE: {config.TLS_SOURCE}")
 
     # Configure TLS cipher suite if specified
     if context:
-        if TLS_CIPHER_SUITE:
-            context.set_ciphers(TLS_CIPHER_SUITE)
+        if config.TLS_CIPHER_SUITE:
+            context.set_ciphers(config.TLS_CIPHER_SUITE)
 
-        logging.info(f"TLS cipher suites used: {', '.join([i['name'] for i in context.get_ciphers()])}")
+        cipher_names = ", ".join([cipher["name"] for cipher in context.get_ciphers()])
+        logging.info("TLS cipher suites used: %s", cipher_names)
 
     controller = None
     try:
         controller = CustomController(
             Handler(),
-            hostname='', # bind dual-stack on all interfaces
+            hostname='',  # bind dual-stack on all interfaces
             port=8025,
-            ident=SERVER_GREETING,
+            ident=config.SERVER_GREETING,
             authenticator=Authenticator(),
             auth_required=True,
-            auth_require_tls=REQUIRE_TLS,
-            require_starttls=REQUIRE_TLS,
+            auth_require_tls=config.REQUIRE_TLS,
+            require_starttls=config.REQUIRE_TLS,
             tls_context=context
         )
         controller.start()
@@ -1199,14 +238,14 @@ async def amain():
 if __name__ == '__main__':
     # Setup logging
     logging.basicConfig(
-        level=LOG_LEVEL,
+        level=config.LOG_LEVEL,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
     # Create event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
+
     # Run main function
     try:
         loop.create_task(amain())

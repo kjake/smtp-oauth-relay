@@ -1,7 +1,8 @@
+import logging
+from typing import Any
+
 from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import SMTP, Session, TLSSetupException
-from typing import Any
-import logging
 
 
 class CustomController(Controller):
@@ -15,6 +16,8 @@ class CustomSMTP(SMTP):
 
     # Custom logic to handle AUTH commands which are in lowercase (bug in aio-libs/aiosmtpd#542)
     async def smtp_AUTH(self, arg: str) -> None:    
+        if not arg:
+            return await super().smtp_AUTH(arg)
         args = arg.split()
         if len(args) == 2:
             args[0] = args[0].upper()
@@ -28,12 +31,14 @@ class CustomSMTP(SMTP):
         except TLSSetupException:
             if self.tls_context:
                 logging.error("TLS handshake with client failed.")
+            return "454 4.7.0 TLS not available"
 
     
     def _create_session(self) -> Session:
         return CustomSession(self.loop)
         
-# Custom Session class to remove deprecation warnings related to login_data attribute (bug in aio-libs/aiosmtpd#347)
+# Custom Session class to remove deprecation warnings related to the login_data
+# attribute (bug in aio-libs/aiosmtpd#347).
 class CustomSession(Session):
     @property
     def login_data(self) -> Any:
