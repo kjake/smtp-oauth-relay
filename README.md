@@ -84,6 +84,7 @@ docker run --name smtp-relay -p 8025:8025 \
 - Optional sender remapping, recipient remapping, and failure notifications by domain
 - TLS via file-based certs or Azure Key Vault (or TLS off for dev)
 - Stateless deployment-friendly design for scaling
+- Per-mailbox Graph API rate limiting and concurrency control (configurable)
 
 ## Features
 

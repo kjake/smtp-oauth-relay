@@ -7,6 +7,7 @@ This document provides a comprehensive reference for all configuration options a
 - [TLS Configuration](#tls-configuration)
 - [Authentication Configuration](#authentication-configuration)
 - [Azure Integration](#azure-integration)
+- [Rate Limiting](#rate-limiting)
 - [Logging Configuration](#logging-configuration)
 
 ## Environment Variables
@@ -51,6 +52,40 @@ SERVER_GREETING="My Company SMTP Relay"
 **Example**:
 ```bash
 HTTP_TIMEOUT_SECONDS=45
+```
+
+### Rate Limiting
+
+The relay enforces conservative per-mailbox limits before calling Microsoft Graph. If limits are exceeded, the relay returns a 4xx response so SMTP clients can retry later.
+
+#### GRAPH_MAILBOX_CONCURRENCY
+- **Type**: Integer
+- **Default**: `4`
+- **Description**: Maximum concurrent outbound Graph send requests per mailbox (`from_email`). This aligns with Exchange Online’s per-mailbox concurrency limit.
+
+**Example**:
+```bash
+GRAPH_MAILBOX_CONCURRENCY=4
+```
+
+#### GRAPH_RATE_LIMIT_PER_10_SECONDS
+- **Type**: Float
+- **Default**: `25`
+- **Description**: Maximum outbound Graph send requests per mailbox per 10-second window. This is a conservative cap intended to reduce the risk of throttling during spikes.
+
+**Example**:
+```bash
+GRAPH_RATE_LIMIT_PER_10_SECONDS=25
+```
+
+#### GRAPH_LIMITER_TTL_SECONDS
+- **Type**: Float
+- **Default**: `3600`
+- **Description**: How long (in seconds) to retain per-mailbox limiter state after its last use. Setting this to `0` disables cleanup. Use this to prevent unbounded limiter growth when many unique mailboxes send sporadically.
+
+**Example**:
+```bash
+GRAPH_LIMITER_TTL_SECONDS=3600
 ```
 
 ### TLS Configuration

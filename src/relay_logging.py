@@ -73,3 +73,7 @@ def log_authentication_failed(exc: Exception) -> None:
 
 def log_auth_unexpected_error(exc: Exception) -> None:
     logging.exception("Unexpected error during authentication: %s", exc)
+
+
+def log_rate_limited(mailbox: str) -> None:
+    logging.warning("Rate limit exceeded for mailbox %s", mailbox)

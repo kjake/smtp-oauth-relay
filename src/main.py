@@ -10,6 +10,7 @@ import config
 import config_resolver
 import graph_client
 import message_utils
+import rate_limiter
 import relay_logging
 import remap
 import sslContext
@@ -19,6 +20,7 @@ from constants import (
     SMTP_AUTH_REQUIRED,
     SMTP_MALFORMED_ADDRESS,
     SMTP_OK,
+    SMTP_RATE_LIMITED,
     SMTP_TRANSACTION_FAILED,
     SMTP_USER_NOT_LOCAL,
 )
@@ -172,11 +174,18 @@ class Handler:
                 )
 
             # Send email using Microsoft Graph API
-            success, error_detail, status_code = graph_client.send_email(
-                session.access_token,
-                raw_message,
-                from_email
-            )
+            limiter = await rate_limiter.try_acquire_mailbox(from_email)
+            if not limiter:
+                relay_logging.log_rate_limited(from_email)
+                return SMTP_RATE_LIMITED
+            try:
+                success, error_detail, status_code = graph_client.send_email(
+                    session.access_token,
+                    raw_message,
+                    from_email
+                )
+            finally:
+                await limiter.release()
 
             if success:
                 return SMTP_OK

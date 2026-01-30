@@ -71,6 +71,21 @@ AZURE_TABLES_PARTITION_KEY = load_env(
     name='AZURE_TABLES_PARTITION_KEY',
     default='user'
 )
+GRAPH_MAILBOX_CONCURRENCY = load_env(
+    name='GRAPH_MAILBOX_CONCURRENCY',
+    default='4',
+    convert=lambda x: int(x)
+)
+GRAPH_RATE_LIMIT_PER_10_SECONDS = load_env(
+    name='GRAPH_RATE_LIMIT_PER_10_SECONDS',
+    default='25',
+    convert=lambda x: float(x)
+)
+GRAPH_LIMITER_TTL_SECONDS = load_env(
+    name='GRAPH_LIMITER_TTL_SECONDS',
+    default='3600',
+    convert=lambda x: float(x)
+)
 FROM_REMAP_DOMAINS = load_env(
     name='FROM_REMAP_DOMAINS',
     default='',
