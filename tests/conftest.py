@@ -69,8 +69,69 @@ def _ensure_azure_stubs() -> None:
         sys.modules["azure.keyvault.secrets"] = secrets
 
 
+def _ensure_aiosmtpd_stub() -> None:
+    try:
+        import aiosmtpd  # noqa: F401
+    except ModuleNotFoundError:
+        sys.modules["aiosmtpd"] = ModuleType("aiosmtpd")
+
+    if "aiosmtpd.smtp" not in sys.modules:
+        smtp = ModuleType("aiosmtpd.smtp")
+
+        class TLSSetupException(Exception):
+            pass
+
+        class AuthResult:
+            def __init__(self, success=False, handled=True, message=None, auth_data=None):
+                self.success = success
+                self.handled = handled
+                self.message = message
+                self.auth_data = auth_data
+
+        class Session:
+            def __init__(self, loop):
+                self.loop = loop
+
+        class SMTP:
+            def __init__(self, handler=None, loop=None, **kwargs):
+                self.handler = handler
+                self.loop = loop
+                self.tls_context = kwargs.get("tls_context")
+
+            async def smtp_AUTH(self, arg):
+                return None
+
+            async def smtp_STARTTLS(self, arg):
+                return None
+
+        smtp.AuthResult = AuthResult
+        smtp.Session = Session
+        smtp.SMTP = SMTP
+        smtp.TLSSetupException = TLSSetupException
+        smtp.MISSING = object()
+        sys.modules["aiosmtpd.smtp"] = smtp
+
+    if "aiosmtpd.controller" not in sys.modules:
+        controller = ModuleType("aiosmtpd.controller")
+
+        class Controller:
+            def __init__(self, handler, **kwargs):
+                self.handler = handler
+                self.SMTP_kwargs = kwargs
+
+            def start(self):
+                return None
+
+            def stop(self):
+                return None
+
+        controller.Controller = Controller
+        sys.modules["aiosmtpd.controller"] = controller
+
+
 _ensure_requests_stub()
 _ensure_azure_stubs()
+_ensure_aiosmtpd_stub()
 
 
 @pytest.fixture(autouse=True)

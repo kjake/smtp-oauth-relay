@@ -4,10 +4,7 @@ import ssl
 
 
 def from_keyvault(azure_key_vault_url, azure_key_vault_cert_name):
-    """
-    Load certificate from Azure Key Vault.
-    Returns ssl.SSLContext object.
-    """
+    # Load certificate from Azure Key Vault and return an SSLContext.
     import base64
     from tempfile import NamedTemporaryFile
 
@@ -48,14 +45,14 @@ def from_keyvault(azure_key_vault_url, azure_key_vault_cert_name):
             cert_path = cert_file.name
             key_path = key_file.name
 
-            # write certificate
+            # Write certificate.
             if certificate is None:
                 logging.error("No certificate found in PKCS#12 data")
                 raise ValueError("No certificate found in PKCS#12 data")
             cert_file.write(certificate.public_bytes(Encoding.PEM))
             cert_file.flush()
 
-            # write private key
+            # Write private key.
             if private_key is None:
                 logging.error("No private key found in PKCS#12 data")
                 raise ValueError("No private key found in PKCS#12 data")
@@ -66,7 +63,7 @@ def from_keyvault(azure_key_vault_url, azure_key_vault_cert_name):
             ))
             key_file.flush()
 
-        # Create SSL context
+        # Create SSL context.
         context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         context.load_cert_chain(certfile=cert_path, keyfile=key_path)
         return context
@@ -102,10 +99,7 @@ def log_tls_cipher_suites(cipher_names: str) -> None:
 
 
 def from_file(cert_filepath, key_filepath):
-    """
-    Load certificate and key from file paths.
-    Returns ssl.SSLContext object.
-    """
+    # Load certificate and key from file paths and return an SSLContext.
     from pathlib import Path
 
     try:
@@ -118,7 +112,6 @@ def from_file(cert_filepath, key_filepath):
     if not cert_path.is_file() or not key_path.is_file():
         logging.error("Certificate or key path is not a file")
         raise FileNotFoundError("Certificate or key path is not a file")
-
 
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     try:

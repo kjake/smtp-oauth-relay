@@ -77,3 +77,18 @@ def log_auth_unexpected_error(exc: Exception) -> None:
 
 def log_rate_limited(mailbox: str) -> None:
     logging.warning("Rate limit exceeded for mailbox %s", mailbox)
+
+
+def log_graph_failback_retry(original_sender: str, failback_sender: str) -> None:
+    logging.warning(
+        "Graph returned 404 for sender %s; retrying with failback sender %s",
+        original_sender,
+        failback_sender,
+    )
+
+
+def log_graph_failback_missing(domain_hint: str | None) -> None:
+    logging.warning(
+        "Graph returned 404 but no failback sender is configured (domain hint: %s)",
+        domain_hint,
+    )

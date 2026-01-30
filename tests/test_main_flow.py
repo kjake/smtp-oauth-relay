@@ -62,6 +62,7 @@ def test_handle_data_send_email_failure(
     expected: str,
 ) -> None:
     envelope = envelope_factory(BASE_MESSAGE)
+    monkeypatch.setattr(main.config, "GRAPH_FAILBACK_ON_404", False)
     patch_domain_context(config_resolver.DomainContext(None, None, None, None))
 
     def send_fail(*_args, **_kwargs):
@@ -70,6 +71,42 @@ def test_handle_data_send_email_failure(
     monkeypatch.setattr(main.graph_client, "send_email", send_fail)
     response = run_data(handler, token_session, envelope)
     assert response == expected
+
+
+def test_handle_data_retry_404_with_failback(
+    handler: main.Handler,
+    token_session: types.SimpleNamespace,
+    envelope_factory,
+    patch_domain_context,
+    run_data,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    envelope = envelope_factory(BASE_MESSAGE)
+    context = config_resolver.DomainContext(
+        domain="example.com",
+        settings=None,
+        failure_notification=None,
+        failback_address="failback@example.com",
+    )
+    patch_domain_context(context)
+    monkeypatch.setattr(main.config, "GRAPH_FAILBACK_ON_404", True)
+    calls: list[tuple[bytes, str]] = []
+
+    def send_fail_then_succeed(access_token, body, from_email):
+        calls.append((body, from_email))
+        if len(calls) == 1:
+            return False, "err", 404
+        return True, None, 202
+
+    monkeypatch.setattr(main.graph_client, "send_email", send_fail_then_succeed)
+    response = run_data(handler, token_session, envelope)
+    assert response == constants.SMTP_OK
+    assert [from_email for _, from_email in calls] == [
+        "sender@example.com",
+        "failback@example.com",
+    ]
+    parsed = BytesParser(policy=policy.SMTP).parsebytes(calls[-1][0])
+    assert parsed.get("From") == "failback@example.com"
 
 
 def test_handle_data_rfc_validation_error(
