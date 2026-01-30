@@ -20,3 +20,4 @@ def test_relay_logging_helpers_cover() -> None:
     relay_logging.log_auth_parse_failed("bad")
     relay_logging.log_authentication_failed(RuntimeError("boom"))
     relay_logging.log_auth_unexpected_error(RuntimeError("boom"))
+    relay_logging.log_rate_limited("user@example.com")

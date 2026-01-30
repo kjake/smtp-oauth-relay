@@ -22,25 +22,34 @@ def test_split_raw_message_variants(raw: bytes, expected: tuple[bytes, bytes, by
 
 
 @pytest.mark.parametrize(
-    ("raw", "updates", "assertions"),
+    ("raw", "updates", "assertions", "absent"),
     [
         (
             b"From: old@example.com\r\nSubject: Test\r\n\r\nBody",
             {"From": "new@example.com", "X-Test": "yes"},
             [b"From: new@example.com", b"X-Test: yes"],
+            [b"From: old@example.com"],
         ),
         (
             b"From: old@example.com\r\nSubject: Test\r\n\r\nBody",
             {"X-Test": "yes"},
             [b"X-Test: yes"],
+            [],
         ),
-        (b"Body", {"X-Test": "yes"}, [b"X-Test: yes"]),
+        (b"Body", {"X-Test": "yes"}, [b"X-Test: yes"], []),
     ],
 )
-def test_update_raw_headers(raw: bytes, updates: dict[str, str], assertions: list[bytes]) -> None:
+def test_update_raw_headers(
+    raw: bytes,
+    updates: dict[str, str],
+    assertions: list[bytes],
+    absent: list[bytes],
+) -> None:
     updated = message_utils.update_raw_headers(raw, updates)
     for token in assertions:
         assert token in updated
+    for token in absent:
+        assert token not in updated
 
 
 def test_update_raw_headers_appends_with_line_endings() -> None:

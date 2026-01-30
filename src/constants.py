@@ -16,4 +16,5 @@ SMTP_OK = "250 OK"
 SMTP_USER_NOT_LOCAL = "551 User not local"
 SMTP_ACTION_ABORTED = "451 Action aborted"
 SMTP_TLS_NOT_AVAILABLE = "454 4.7.0 TLS not available"
+SMTP_RATE_LIMITED = "451 4.7.0 Rate limit exceeded, please retry later"
 # Centralized SMTP response strings shared across modules.

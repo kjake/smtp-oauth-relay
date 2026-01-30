@@ -73,6 +73,18 @@ _ensure_requests_stub()
 _ensure_azure_stubs()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter_registry():
+    try:
+        import rate_limiter
+    except Exception:
+        yield
+        return
+    rate_limiter._limiters.clear()
+    yield
+    rate_limiter._limiters.clear()
+
+
 @pytest.fixture
 def handler():
     import main

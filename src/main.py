@@ -10,6 +10,7 @@ import config
 import config_resolver
 import graph_client
 import message_utils
+import rate_limiter
 import relay_logging
 import remap
 import sslContext
@@ -19,6 +20,7 @@ from constants import (
     SMTP_AUTH_REQUIRED,
     SMTP_MALFORMED_ADDRESS,
     SMTP_OK,
+    SMTP_RATE_LIMITED,
     SMTP_TRANSACTION_FAILED,
     SMTP_USER_NOT_LOCAL,
 )
@@ -61,7 +63,7 @@ class Handler:
             header_updates: dict[str, str | None] = {}
             header_change_reasons: list[str] = []
 
-            # Ensure replies go back to the original From when clients omit Reply-To.
+            # Ensure replies go back to the original valid From when clients omit Reply-To.
             if from_header_valid and not parsed_message.get('Reply-To'):
                 header_updates['Reply-To'] = from_header_raw
                 header_change_reasons.append("inserted Reply-To from From header")
@@ -171,12 +173,20 @@ class Handler:
                     header_change_reasons,
                 )
 
-            # Send email using Microsoft Graph API
-            success, error_detail, status_code = graph_client.send_email(
-                session.access_token,
-                raw_message,
-                from_email
-            )
+            # Rate-limit and send email using Microsoft Graph API.
+            limiter = await rate_limiter.try_acquire_mailbox(from_email)
+            if not limiter:
+                relay_logging.log_rate_limited(from_email)
+                return SMTP_RATE_LIMITED
+            try:
+                success, error_detail, status_code = graph_client.send_email(
+                    session.access_token,
+                    raw_message,
+                    from_email
+                )
+            finally:
+                # Always release limiter capacity even on send failures.
+                await limiter.release()
 
             if success:
                 return SMTP_OK
@@ -230,7 +240,7 @@ async def amain():
             sslContext.log_invalid_tls_source(config.TLS_SOURCE)
             raise ValueError(f"Invalid TLS_SOURCE: {config.TLS_SOURCE}")
 
-    # Configure TLS cipher suite if specified
+    # Configure TLS cipher suite if specified, then log the actual ciphers.
     if context:
         if config.TLS_CIPHER_SUITE:
             context.set_ciphers(config.TLS_CIPHER_SUITE)
