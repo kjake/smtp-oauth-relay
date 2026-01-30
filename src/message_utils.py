@@ -87,6 +87,11 @@ def update_raw_headers(raw_message: bytes, updates: dict[str, str | None]) -> by
             continue
         new_lines.append(line)
 
+    has_new_headers = any(value is not None for value in updates.values())
+    # Ensure appended headers don't get glued to the last existing header line.
+    if new_lines and has_new_headers and not new_lines[-1].endswith(line_ending):
+        new_lines[-1] = new_lines[-1] + line_ending
+
     for header_name, header_value in updates.items():
         if header_value is None:
             continue
