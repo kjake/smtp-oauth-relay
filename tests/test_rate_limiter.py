@@ -81,3 +81,22 @@ def test_mailbox_limiter_registry_cleanup(monkeypatch: pytest.MonkeyPatch) -> No
     asyncio.run(rate_limiter.get_mailbox_limiter("b@example.com"))
 
     assert "a@example.com" not in rate_limiter._limiters
+
+
+def test_low_rate_limit_allows_sparse_sends(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+
+    def time_fn():
+        return now[0]
+
+    monkeypatch.setattr(rate_limiter, "monotonic", time_fn)
+    monkeypatch.setattr(rate_limiter.config, "GRAPH_MAILBOX_CONCURRENCY", 1)
+    monkeypatch.setattr(rate_limiter.config, "GRAPH_RATE_LIMIT_PER_10_SECONDS", 0.5)
+    monkeypatch.setattr(rate_limiter.config, "GRAPH_LIMITER_TTL_SECONDS", 60)
+
+    limiter = asyncio.run(rate_limiter.get_mailbox_limiter("low@example.com"))
+    assert asyncio.run(limiter.try_acquire()) is True
+    asyncio.run(limiter.release())
+    assert asyncio.run(limiter.try_acquire()) is False
+    now[0] = 20.0
+    assert asyncio.run(limiter.try_acquire()) is True

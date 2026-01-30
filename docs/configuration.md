@@ -72,6 +72,7 @@ GRAPH_MAILBOX_CONCURRENCY=4
 - **Type**: Float
 - **Default**: `25`
 - **Description**: Maximum outbound Graph send requests per mailbox per 10-second window. This is a conservative cap intended to reduce the risk of throttling during spikes.
+  Values between `0` and `1` are allowed and represent less than one request per 10 seconds (for example, `0.5` allows roughly one send every 20 seconds).
 
 **Example**:
 ```bash
