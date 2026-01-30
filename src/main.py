@@ -190,6 +190,35 @@ class Handler:
 
             if success:
                 return SMTP_OK
+
+            # Retry with a domain failback sender when Graph returns 404.
+            if status_code == 404 and config.GRAPH_FAILBACK_ON_404:
+                failback_address = domain_context.failback_address
+                if failback_address and failback_address != from_email:
+                    relay_logging.log_graph_failback_retry(from_email, failback_address)
+                    fallback_updates = {"From": failback_address}
+                    raw_message = message_utils.apply_header_updates(
+                        raw_message,
+                        BytesParser(policy=policy.SMTP).parsebytes(raw_message),
+                        fallback_updates,
+                        ["applied failback sender after Graph 404"],
+                    )
+                    limiter = await rate_limiter.try_acquire_mailbox(failback_address)
+                    if not limiter:
+                        relay_logging.log_rate_limited(failback_address)
+                        return SMTP_RATE_LIMITED
+                    try:
+                        success, error_detail, status_code = graph_client.send_email(
+                            session.access_token,
+                            raw_message,
+                            failback_address
+                        )
+                    finally:
+                        await limiter.release()
+                    if success:
+                        return SMTP_OK
+                elif not failback_address:
+                    relay_logging.log_graph_failback_missing(domain_hint)
             # Optionally emit a failure notification if configured for the domain.
             failure_notification = domain_context.failure_notification
             if failure_notification:

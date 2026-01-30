@@ -285,6 +285,17 @@ This allows per-domain overrides to live in the table while keeping urgent or te
 EXAMPLE_COM_FROM_FAILBACK=noreply@example.com
 ```
 
+#### GRAPH_FAILBACK_ON_404
+- **Type**: Boolean
+- **Default**: `false`
+- **Valid Values**: `true`, `false` (case-insensitive)
+- **Description**: When enabled, if Microsoft Graph returns HTTP 404 for the initial `sendMail` request, the relay retries once using the domain’s `<DOMAIN>_FROM_FAILBACK` address as the sender mailbox and updates the message `From` header to match. This keeps the original Reply-To behavior intact while allowing Graph to send from a real mailbox.
+
+**Example**:
+```bash
+GRAPH_FAILBACK_ON_404=true
+```
+
 #### FROM_REMAP_DOMAINS
 - **Type**: Comma-separated list of domains
 - **Default**: None (optional)

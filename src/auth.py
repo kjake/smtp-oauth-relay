@@ -28,17 +28,12 @@ UUID_PATTERN = re.compile(
 
 
 def decode_uuid_or_base64url(input_str: str) -> str:
-    """
-    Checks if input is a UUID string, otherwise attempts to decode as base64url
-    and convert to UUID string.
-    Returns a decoded string in UUID format.
-    """
-
-    # check if the input is a UUID
+    # Checks if input is a UUID string, otherwise decodes base64url into a UUID.
+    # Returns the decoded string in UUID format.
     if UUID_PATTERN.match(input_str):
         return input_str
 
-    # Attempt to decode as base64url
+    # Attempt to decode as base64url.
     try:
         padded = input_str + "=" * (-len(input_str) % 4)
         return str(uuid.UUID(bytes=base64.urlsafe_b64decode(padded)))
@@ -47,10 +42,8 @@ def decode_uuid_or_base64url(input_str: str) -> str:
 
 
 def lookup_user(lookup_id: str) -> tuple[str, str, str | None]:
-    """
-    Search in Azure Table for user information based on the lookup_id (RowKey).
-    Returns (tenant_id, client_id, from_email) or raises ValueError if not found.
-    """
+    # Search in Azure Table for user information based on the lookup_id (RowKey).
+    # Returns (tenant_id, client_id, from_email) or raises ValueError if not found.
     if not AZURE_TABLES_URL:
         raise ValueError("AZURE_TABLES_URL environment variable not set")
 
@@ -87,10 +80,8 @@ def lookup_user(lookup_id: str) -> tuple[str, str, str | None]:
 
 
 def parse_username(username: str) -> tuple[str, str, str | None]:
-    """
-    Parse the username to extract tenant_id and client_id.
-    The expected format is: tenant_id{USERNAME_DELIMITER}client_id{. optional_tld}
-    """
+    # Parse the username to extract tenant_id and client_id.
+    # Expected format: tenant_id{USERNAME_DELIMITER}client_id{. optional_tld}
 
     # remove the optional TLD if present
     if '.' in username:

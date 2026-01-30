@@ -86,6 +86,13 @@ GRAPH_LIMITER_TTL_SECONDS = load_env(
     default='3600',
     convert=lambda x: float(x)
 )
+GRAPH_FAILBACK_ON_404 = load_env(
+    name='GRAPH_FAILBACK_ON_404',
+    default='false',
+    valid_values=['true', 'false'],
+    sanitize=lambda x: x.lower(),
+    convert=lambda x: x == 'true'
+)
 FROM_REMAP_DOMAINS = load_env(
     name='FROM_REMAP_DOMAINS',
     default='',
