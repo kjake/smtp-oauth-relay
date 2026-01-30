@@ -6,10 +6,25 @@ import constants
 import custom
 
 
-def test_custom_smtp_auth_and_starttls(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def loop() -> asyncio.AbstractEventLoop:
     loop = asyncio.new_event_loop()
-    smtp = custom.CustomSMTP(handler=None, loop=loop, enable_SMTPUTF8=True)
+    try:
+        yield loop
+    finally:
+        loop.close()
 
+
+@pytest.fixture
+def smtp(loop: asyncio.AbstractEventLoop) -> custom.CustomSMTP:
+    return custom.CustomSMTP(handler=None, loop=loop, enable_SMTPUTF8=True)
+
+
+def test_custom_smtp_auth_and_starttls(
+    smtp: custom.CustomSMTP,
+    loop: asyncio.AbstractEventLoop,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured = {}
 
     async def fake_super_auth(self, arg):
@@ -27,20 +42,13 @@ def test_custom_smtp_auth_and_starttls(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert loop.run_until_complete(smtp.smtp_STARTTLS("")) == constants.SMTP_TLS_NOT_AVAILABLE
 
-    loop.close()
 
-
-def test_custom_session_login_data() -> None:
-    loop = asyncio.new_event_loop()
+def test_custom_session_login_data(loop: asyncio.AbstractEventLoop) -> None:
     session = custom.CustomSession(loop)
     session.login_data = "value"
     assert session.login_data == "value"
-    loop.close()
 
 
-def test_custom_session_factory() -> None:
-    loop = asyncio.new_event_loop()
-    smtp = custom.CustomSMTP(handler=None, loop=loop, enable_SMTPUTF8=True)
+def test_custom_session_factory(smtp: custom.CustomSMTP) -> None:
     session = smtp._create_session()
     assert isinstance(session, custom.CustomSession)
-    loop.close()

@@ -57,11 +57,12 @@ class Handler:
             from_header_raw = parsed_message.get('From')
             from_header_address = addressing.parse_email_address(from_header_raw)
             envelope_from_address = addressing.parse_email_address(envelope.mail_from)
+            from_header_valid = from_header_address is not None
             header_updates: dict[str, str | None] = {}
             header_change_reasons: list[str] = []
 
             # Ensure replies go back to the original From when clients omit Reply-To.
-            if from_header_raw and not parsed_message.get('Reply-To'):
+            if from_header_valid and not parsed_message.get('Reply-To'):
                 header_updates['Reply-To'] = from_header_raw
                 header_change_reasons.append("inserted Reply-To from From header")
 
@@ -142,10 +143,11 @@ class Handler:
                 failback_address = domain_context.failback_address
                 if failback_address:
                     header_updates['From'] = failback_address
-                    header_updates['Reply-To'] = message_utils.build_reply_to_value(
-                        parsed_message.get('Reply-To'),
-                        from_header_raw
-                    )
+                    if from_header_valid:
+                        header_updates['Reply-To'] = message_utils.build_reply_to_value(
+                            parsed_message.get('Reply-To'),
+                            from_header_raw
+                        )
                     from_email = failback_address
                     message_utils.log_from_remap_applied(domain_hint, failback_address)
                     header_change_reasons.append("remapped From header")

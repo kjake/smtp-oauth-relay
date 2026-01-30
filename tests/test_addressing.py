@@ -4,24 +4,39 @@ import addressing
 import domain_settings
 
 
-def test_parse_email_address_rejects_empty() -> None:
-    assert addressing.parse_email_address("") is None
-    assert addressing.parse_email_address("<>") is None
-    assert addressing.parse_email_address("not-an-email") is None
+@pytest.fixture
+def domain_settings_fixture() -> domain_settings.DomainSettings:
+    return domain_settings.DomainSettings(
+        from_remap=False,
+        remap_addresses=set(),
+        failure_notification="ops@example.com",
+    )
 
 
-def test_parse_email_address_accepts_valid() -> None:
-    assert addressing.parse_email_address("User <user@example.com>") == "user@example.com"
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", None),
+        ("<>", None),
+        ("not-an-email", None),
+        ("User <user@example.com>", "user@example.com"),
+    ],
+)
+def test_parse_email_address(value: str, expected: str | None) -> None:
+    assert addressing.parse_email_address(value) == expected
 
 
-def test_extract_domain_hint() -> None:
-    assert addressing.extract_domain_hint("from <user@example.com>") == "example.com"
-    assert addressing.extract_domain_hint(None, "nope") is None
-
-
-def test_extract_domain_hint_normalizes_case() -> None:
-    assert addressing.extract_domain_hint("User <USER@EXAMPLE.COM>") == "example.com"
-    assert addressing.extract_domain_hint(None, "not an address") is None
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        (("from <user@example.com>",), "example.com"),
+        ((None, "nope"), None),
+        (("User <USER@EXAMPLE.COM>",), "example.com"),
+        ((None, "not an address"), None),
+    ],
+)
+def test_extract_domain_hint(values: tuple[str | None, ...], expected: str | None) -> None:
+    assert addressing.extract_domain_hint(*values) == expected
 
 
 def test_failback_env_var_name() -> None:
@@ -47,19 +62,17 @@ def test_lookup_failure_notification_address(monkeypatch: pytest.MonkeyPatch) ->
     assert addressing.lookup_failure_notification_address(domain, None) == "alert@example.com"
 
 
-def test_lookup_failure_notification_address_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = domain_settings.DomainSettings(
-        from_remap=False,
-        remap_addresses=set(),
-        failure_notification="ops@example.com",
-    )
+def test_lookup_failure_notification_address_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    domain_settings_fixture: domain_settings.DomainSettings,
+) -> None:
     assert (
-        addressing.lookup_failure_notification_address("example.com", settings)
+        addressing.lookup_failure_notification_address("example.com", domain_settings_fixture)
         == "ops@example.com"
     )
     monkeypatch.setenv("EXAMPLE_COM_FAILURE_NOTIFICATION", "env@example.com")
     assert (
-        addressing.lookup_failure_notification_address("example.com", settings)
+        addressing.lookup_failure_notification_address("example.com", domain_settings_fixture)
         == "env@example.com"
     )
 
@@ -74,21 +87,37 @@ def test_lookup_to_failback_address(monkeypatch: pytest.MonkeyPatch) -> None:
     assert addressing.lookup_to_failback_address(None) is None
 
 
-def test_normalize_bool_variants() -> None:
-    assert addressing.normalize_bool(True) is True
-    assert addressing.normalize_bool(False) is False
-    assert addressing.normalize_bool(None) is None
-    assert addressing.normalize_bool(" yes ") is True
-    assert addressing.normalize_bool("0") is False
-    assert addressing.normalize_bool("maybe") is None
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (None, None),
+        (" yes ", True),
+        ("0", False),
+        ("maybe", None),
+    ],
+)
+def test_normalize_bool_variants(value: object, expected: bool | None) -> None:
+    assert addressing.normalize_bool(value) is expected
 
 
-def test_is_valid_smtp_mailbox_variants() -> None:
-    assert addressing.is_valid_smtp_mailbox("<>", allow_null=True) is True
-    assert addressing.is_valid_smtp_mailbox("user@example.com") is True
-    assert addressing.is_valid_smtp_mailbox("user@[127.0.0.1]") is True
-    assert addressing.is_valid_smtp_mailbox("not-an-email") is False
-    assert addressing.is_valid_smtp_mailbox("user@@example.com") is False
-    assert addressing.is_valid_smtp_mailbox("user<@example.com") is False
-    assert addressing.is_valid_smtp_mailbox("a" * 65 + "@example.com") is False
-    assert addressing.is_valid_smtp_mailbox("user@" + ("b" * 64) + ".com") is False
+@pytest.mark.parametrize(
+    ("address", "allow_null", "expected"),
+    [
+        ("<>", True, True),
+        ("user@example.com", True, True),
+        ("user@[127.0.0.1]", False, True),
+        ("not-an-email", False, False),
+        ("user@@example.com", False, False),
+        ("user<@example.com", False, False),
+        ("a" * 65 + "@example.com", False, False),
+        ("user@" + ("b" * 64) + ".com", False, False),
+    ],
+)
+def test_is_valid_smtp_mailbox_variants(
+    address: str,
+    allow_null: bool,
+    expected: bool,
+) -> None:
+    assert addressing.is_valid_smtp_mailbox(address, allow_null=allow_null) is expected

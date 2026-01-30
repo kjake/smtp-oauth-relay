@@ -7,25 +7,49 @@ import pytest
 import graph_client
 
 
-def test_send_email_success(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def parsed_message() -> BytesParser:
+    return BytesParser(policy=policy.SMTP).parsebytes(
+        b"From: sender@example.com\r\n"
+        b"To: recipient@example.com\r\n"
+        b"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n"
+        b"Subject: Test\r\n"
+        b"Message-ID: <id@example.com>\r\n\r\nBody"
+    )
+
+
+@pytest.fixture
+def envelope() -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        mail_from="sender@example.com",
+        rcpt_tos=["recipient@example.com"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "text", "expected"),
+    [
+        (202, "", (True, None, 202)),
+        (400, "bad", (False, "Status code 400; response body: bad", 400)),
+    ],
+)
+def test_send_email_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    text: str,
+    expected: tuple[bool, str | None, int | None],
+) -> None:
     class FakeResponse:
-        status_code = 202
-        text = ""
+        def __init__(self, status_code: int, text_value: str) -> None:
+            self.status_code = status_code
+            self.text = text_value
 
-    monkeypatch.setattr(graph_client.requests, "post", lambda *args, **kwargs: FakeResponse())
-    assert graph_client.send_email("token", b"Body", "user@example.com") == (True, None, 202)
-
-
-def test_send_email_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeResponse:
-        status_code = 400
-        text = "bad"
-
-    monkeypatch.setattr(graph_client.requests, "post", lambda *args, **kwargs: FakeResponse())
-    success, error_detail, status_code = graph_client.send_email("token", b"body", "user@x.com")
-    assert success is False
-    assert status_code == 400
-    assert "Status code 400" in error_detail
+    monkeypatch.setattr(
+        graph_client.requests,
+        "post",
+        lambda *args, **kwargs: FakeResponse(status, text),
+    )
+    assert graph_client.send_email("token", b"Body", "user@example.com") == expected
 
 
 def test_send_email_exception(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,7 +63,11 @@ def test_send_email_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "boom" in error_detail
 
 
-def test_send_failure_notification(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_send_failure_notification(
+    monkeypatch: pytest.MonkeyPatch,
+    parsed_message,
+    envelope,
+) -> None:
     captured = {}
 
     def fake_send_email(access_token, body, from_email):
@@ -48,18 +76,6 @@ def test_send_failure_notification(monkeypatch: pytest.MonkeyPatch) -> None:
         return True, None, 202
 
     monkeypatch.setattr(graph_client, "send_email", fake_send_email)
-
-    parsed_message = BytesParser(policy=policy.SMTP).parsebytes(
-        b"From: sender@example.com\r\n"
-        b"To: recipient@example.com\r\n"
-        b"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n"
-        b"Subject: Test\r\n"
-        b"Message-ID: <id@example.com>\r\n\r\nBody"
-    )
-    envelope = types.SimpleNamespace(
-        mail_from="sender@example.com",
-        rcpt_tos=["recipient@example.com"]
-    )
 
     graph_client.send_failure_notification(
         access_token="token",
@@ -78,20 +94,11 @@ def test_send_failure_notification(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_send_failure_notification_logs_error(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture
+    caplog: pytest.LogCaptureFixture,
+    parsed_message,
+    envelope,
 ) -> None:
     monkeypatch.setattr(graph_client, "send_email", lambda *args, **kwargs: (False, "oops", 500))
-    parsed_message = BytesParser(policy=policy.SMTP).parsebytes(
-        b"From: sender@example.com\r\n"
-        b"To: recipient@example.com\r\n"
-        b"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n"
-        b"Subject: Test\r\n"
-        b"Message-ID: <id@example.com>\r\n\r\nBody"
-    )
-    envelope = types.SimpleNamespace(
-        mail_from="sender@example.com",
-        rcpt_tos=["recipient@example.com"]
-    )
     with caplog.at_level("ERROR"):
         graph_client.send_failure_notification(
             access_token="token",

@@ -1,6 +1,10 @@
+import asyncio
 import sys
+import types
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -67,3 +71,53 @@ def _ensure_azure_stubs() -> None:
 
 _ensure_requests_stub()
 _ensure_azure_stubs()
+
+
+@pytest.fixture
+def handler():
+    import main
+
+    return main.Handler()
+
+
+@pytest.fixture
+def token_session() -> types.SimpleNamespace:
+    return types.SimpleNamespace(access_token="token", lookup_from_email=None)
+
+
+@pytest.fixture
+def envelope_factory():
+    def _make(
+        content: bytes,
+        mail_from: str = "sender@example.com",
+        rcpt_tos: list[str] | None = None,
+    ) -> types.SimpleNamespace:
+        return types.SimpleNamespace(
+            mail_from=mail_from,
+            rcpt_tos=rcpt_tos or ["recipient@example.com"],
+            content=content,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def run_data():
+    def _run(handler, session, envelope) -> str:
+        return asyncio.run(handler.handle_DATA(None, session, envelope))
+
+    return _run
+
+
+@pytest.fixture
+def patch_domain_context(monkeypatch: pytest.MonkeyPatch):
+    import main
+
+    def _patch(context):
+        monkeypatch.setattr(
+            main.config_resolver,
+            "resolve_domain_context",
+            lambda *args, **kwargs: context,
+        )
+
+    return _patch

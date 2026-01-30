@@ -8,9 +8,23 @@ import auth
 import constants
 
 
+def encode_uuid(value: uuid.UUID) -> str:
+    return base64.urlsafe_b64encode(value.bytes).decode().rstrip("=")
+
+
+@pytest.fixture
+def session() -> types.SimpleNamespace:
+    return types.SimpleNamespace()
+
+
+@pytest.fixture
+def auth_data() -> types.SimpleNamespace:
+    return types.SimpleNamespace(login=b"user", password=b"secret")
+
+
 def test_decode_uuid_or_base64url_roundtrip() -> None:
     value = uuid.uuid4()
-    encoded = base64.urlsafe_b64encode(value.bytes).decode().rstrip("=")
+    encoded = encode_uuid(value)
     assert auth.decode_uuid_or_base64url(str(value)) == str(value)
     assert auth.decode_uuid_or_base64url(encoded) == str(value)
 
@@ -48,78 +62,90 @@ def test_lookup_user_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert from_email == "sender@example.com"
 
 
-def test_lookup_user_missing_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(auth, "AZURE_TABLES_URL", None)
-    with pytest.raises(ValueError):
-        auth.lookup_user("missing")
-
-
-def test_lookup_user_table_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(auth, "AZURE_TABLES_URL", "https://example.com/table")
+@pytest.mark.parametrize(
+    ("tables_url", "expected_exc"),
+    [
+        (None, ValueError),
+        ("https://example.com/table", RuntimeError),
+    ],
+)
+def test_lookup_user_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tables_url: str | None,
+    expected_exc: type[Exception],
+) -> None:
+    monkeypatch.setattr(auth, "AZURE_TABLES_URL", tables_url)
 
     def raise_client(*_args, **_kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(auth.TableClient, "from_table_url", raise_client)
-    with pytest.raises(RuntimeError):
+    if tables_url:
+        monkeypatch.setattr(auth.TableClient, "from_table_url", raise_client)
+
+    with pytest.raises(expected_exc):
         auth.lookup_user("missing")
 
 
-def test_parse_username_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("username", "expected"),
+    [
+        ("app@lookup", ("tenant", "client", "from@example.com")),
+    ],
+)
+def test_parse_username_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    username: str,
+    expected: tuple[str, str, str | None],
+) -> None:
     monkeypatch.setattr(auth, "USERNAME_DELIMITER", "@")
-    monkeypatch.setattr(
-        auth,
-        "lookup_user",
-        lambda lookup_id: ("tenant", "client", "from@example.com"),
-    )
-    tenant_id, client_id, from_email = auth.parse_username("app@lookup")
-    assert tenant_id == "tenant"
-    assert client_id == "client"
-    assert from_email == "from@example.com"
+    monkeypatch.setattr(auth, "lookup_user", lambda lookup_id: expected)
+    assert auth.parse_username(username) == expected
 
 
 def test_parse_username_base64(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auth, "USERNAME_DELIMITER", "@")
     tenant_uuid = uuid.uuid4()
     client_uuid = uuid.uuid4()
-    tenant_b64 = base64.urlsafe_b64encode(tenant_uuid.bytes).decode().rstrip("=")
-    client_b64 = base64.urlsafe_b64encode(client_uuid.bytes).decode().rstrip("=")
+    tenant_b64 = encode_uuid(tenant_uuid)
+    client_b64 = encode_uuid(client_uuid)
     tenant_id, client_id, from_email = auth.parse_username(f"{tenant_b64}@{client_b64}.local")
     assert tenant_id == str(tenant_uuid)
     assert client_id == str(client_uuid)
     assert from_email is None
 
 
-def test_parse_username_invalid() -> None:
+@pytest.mark.parametrize("username", ["invalid", "too@many@parts"])
+def test_parse_username_invalid(username: str) -> None:
     with pytest.raises(ValueError):
-        auth.parse_username("invalid")
-    with pytest.raises(ValueError):
-        auth.parse_username("too@many@parts")
+        auth.parse_username(username)
 
 
-def test_get_access_token(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("payload", "expected", "raises"),
+    [
+        ({"access_token": "token"}, "token", None),
+        ({}, None, ValueError),
+    ],
+)
+def test_get_access_token_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+    expected: str | None,
+    raises: type[Exception] | None,
+) -> None:
     class FakeResponse:
         def raise_for_status(self):
             return None
 
         def json(self):
-            return {"access_token": "token"}
+            return payload
 
     monkeypatch.setattr(auth.requests, "post", lambda *args, **kwargs: FakeResponse())
-    assert auth.get_access_token("tenant", "client", "secret") == "token"
-
-
-def test_get_access_token_missing_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {}
-
-    monkeypatch.setattr(auth.requests, "post", lambda *args, **kwargs: FakeResponse())
-    with pytest.raises(ValueError):
-        auth.get_access_token("tenant", "client", "secret")
+    if raises:
+        with pytest.raises(raises):
+            auth.get_access_token("tenant", "client", "secret")
+    else:
+        assert auth.get_access_token("tenant", "client", "secret") == expected
 
 
 def test_get_access_token_request_exception(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,25 +166,17 @@ def test_get_access_token_request_exception(monkeypatch: pytest.MonkeyPatch) -> 
         auth.get_access_token("tenant", "client", "secret")
 
 
-def test_authenticator_success(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("mechanism", ["LOGIN", "PLAIN"])
+def test_authenticator_success(
+    monkeypatch: pytest.MonkeyPatch,
+    session: types.SimpleNamespace,
+    auth_data: types.SimpleNamespace,
+    mechanism: str,
+) -> None:
     monkeypatch.setattr(auth, "parse_username", lambda _: ("tenant", "client", None))
     monkeypatch.setattr(auth, "get_access_token", lambda *args, **kwargs: "token")
 
-    session = types.SimpleNamespace()
-    auth_data = types.SimpleNamespace(login=b"user", password=b"secret")
-
-    result = auth.Authenticator()(None, session, None, "LOGIN", auth_data)
-    assert result.success is True
-    assert session.access_token == "token"
-
-
-def test_authenticator_plain_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(auth, "parse_username", lambda _: ("tenant", "client", None))
-    monkeypatch.setattr(auth, "get_access_token", lambda *args, **kwargs: "token")
-
-    session = types.SimpleNamespace()
-    auth_data = types.SimpleNamespace(login=b"user", password=b"secret")
-    result = auth.Authenticator()(None, session, None, "PLAIN", auth_data)
+    result = auth.Authenticator()(None, session, None, mechanism, auth_data)
     assert result.success is True
     assert session.access_token == "token"
 
