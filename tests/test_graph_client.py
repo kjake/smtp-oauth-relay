@@ -70,9 +70,10 @@ def test_send_failure_notification(
 ) -> None:
     captured = {}
 
-    def fake_send_email(access_token, body, from_email):
+    def fake_send_email(access_token, body, from_email, log_context=None):
         captured["body"] = body
         captured["from_email"] = from_email
+        captured["log_context"] = log_context
         return True, None, 202
 
     monkeypatch.setattr(graph_client, "send_email", fake_send_email)
@@ -90,6 +91,7 @@ def test_send_failure_notification(
     assert message["Subject"].startswith("SMTP relay failure")
     assert message["To"] == "alerts@example.com"
     assert message["From"] == "notify@example.com"
+    assert captured["log_context"] == "failure notification to alerts@example.com"
 
 
 def test_send_failure_notification_logs_error(
