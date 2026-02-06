@@ -14,7 +14,8 @@ GRAPH_MIME_CONTENT_TYPE = "text/plain"
 def send_email(
     access_token: str,
     body: bytes,
-    from_email: str
+    from_email: str,
+    log_context: str | None = None,
 ) -> tuple[bool, str | None, int | None]:
     # Send a raw RFC5322 message through Microsoft Graph sendMail.
     url = f"https://graph.microsoft.com/v1.0/users/{from_email}/sendMail"
@@ -23,6 +24,7 @@ def send_email(
         "Content-Type": GRAPH_MIME_CONTENT_TYPE
     }
 
+    context_suffix = f" ({log_context})" if log_context else ""
     try:
         # Graph expects base64-encoded MIME content when using text/plain.
         data = base64.b64encode(body)
@@ -30,13 +32,13 @@ def send_email(
 
         response = requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
         if response.status_code == 202:
-            logging.info("Email sent successfully!")
+            logging.info("Email sent successfully%s!", context_suffix)
             return True, None, response.status_code
         error_detail = f"Status code {response.status_code}; response body: {response.text}"
-        logging.error("Failed to send email: %s", error_detail)
+        logging.error("Failed to send email%s: %s", context_suffix, error_detail)
         return False, error_detail, response.status_code
     except Exception as e:
-        logging.exception("Exception while sending email: %s", e)
+        logging.exception("Exception while sending email%s: %s", context_suffix, e)
         return False, str(e), None
 
 
@@ -92,7 +94,8 @@ def send_failure_notification(
     success, notification_error, _ = send_email(
         access_token=access_token,
         body=message.as_bytes(policy=policy.SMTP),
-        from_email=from_email
+        from_email=from_email,
+        log_context=f"failure notification to {notification_address}",
     )
     if not success:
         logging.error(
