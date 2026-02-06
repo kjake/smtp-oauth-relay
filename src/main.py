@@ -55,11 +55,12 @@ class Handler:
             x_sender_raw = parsed_message.get('X-Sender')
             x_sender_address = addressing.parse_email_address(x_sender_raw)
 
-            return_path_address = addressing.parse_email_address(parsed_message.get('Return-Path'))
+            return_path_raw = parsed_message.get('Return-Path')
+            return_path_address = addressing.parse_email_address(return_path_raw)
             from_header_raw = parsed_message.get('From')
             from_header_address = addressing.parse_email_address(from_header_raw)
-            envelope_from_address = addressing.parse_email_address(envelope.mail_from)
             from_header_valid = from_header_address is not None
+            from_email = from_header_address
             header_updates: dict[str, str | None] = {}
             header_change_reasons: list[str] = []
 
@@ -70,7 +71,7 @@ class Handler:
 
             # Normalize invalid X-Sender so downstream routing has a usable sender.
             if x_sender_raw is not None and not x_sender_address:
-                replacement_sender = return_path_address or from_header_address
+                replacement_sender = from_header_address or return_path_address
                 if replacement_sender:
                     header_updates['X-Sender'] = replacement_sender
                     x_sender_address = replacement_sender
@@ -82,17 +83,10 @@ class Handler:
                     from_header_address,
                 )
 
-            from_email = (
-                x_sender_address
-                or return_path_address
-                or from_header_address
-                or envelope_from_address
-            )
-
             # Resolve domain-level settings with env-first precedence.
             domain_context = config_resolver.resolve_domain_context(
                 x_sender_raw,
-                parsed_message.get('Return-Path'),
+                return_path_raw,
                 from_header_raw,
                 envelope.mail_from,
                 *(envelope.rcpt_tos or [])
