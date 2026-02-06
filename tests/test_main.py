@@ -101,6 +101,38 @@ def test_handler_inserts_reply_to_when_missing(
     assert parsed.get("Reply-To") == "Sender Name <sender@example.com>"
 
 
+def test_handler_uses_from_header_with_return_path(
+    handler: main.Handler,
+    token_session: types.SimpleNamespace,
+    envelope_factory,
+    run_data,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    def fake_send_email(access_token, body, from_email):
+        captured["body"] = body
+        captured["from_email"] = from_email
+        return True, None, 202
+
+    monkeypatch.setattr(main.graph_client, "send_email", fake_send_email)
+    envelope = envelope_factory(
+        b"Return-Path: notifications@example.com\r\n"
+        b"From: Sender Name <sender@example.com>\r\n"
+        b"To: recipient@example.com\r\n"
+        b"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n"
+        b"\r\nBody",
+        mail_from="notifications@example.com",
+    )
+
+    response = run_data(handler, token_session, envelope)
+    assert response == "250 OK"
+
+    parsed = BytesParser(policy=policy.SMTP).parsebytes(captured["body"])
+    assert captured["from_email"] == "sender@example.com"
+    assert parsed.get("Return-Path") == "notifications@example.com"
+
+
 def test_handler_normalizes_invalid_x_sender(
     handler: main.Handler,
     token_session: types.SimpleNamespace,
